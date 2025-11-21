@@ -1,0 +1,49 @@
+# Configuration for NeCTI Nested Compound Identification
+# Using XLM-RoBERTa encoder with DiffusionSL decoder
+
+# Model Configuration
+base: 'ner'
+dataset: 'necti_coarse'
+num_classes: 10  # Will be adjusted automatically based on data
+backbone: 'xlm-roberta-base'  # XLM-R encoder
+time_steps: 1000
+sampling_steps: 10
+ddim_sampling_eta: 1.0
+self_condition: False
+snr_scale: 2.0
+dim_model: 768  # XLM-R hidden size
+dim_time: 256
+depth: 6
+objective: 'pred_x0'
+noise_schedule: 'linear'
+loss_type: 'l2'
+add_lstm: False
+freeze_bert: False
+max_length: 256
+network_architecture: 'transformer'
+ensemble: False
+
+# Data Configuration
+data_path: '/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data'
+granularity: 'Coarse'
+
+# Training Configuration
+logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
+output_dir: 'saved_models/necti_coarse'
+batch_size: 16
+num_workers: 4
+max_epochs: 20
+max_steps: 250000
+warmup_steps: 1000
+warmup_ratio: 0.01
+optimizer_type: 'AdamW'
+lr_scheduler_type: 'linear'
+lr_bert: 2e-5  # Lower learning rate for pretrained XLM-R
+lr_other: 5e-4  # Higher learning rate for diffusion components
+weight_decay: 0.01
+max_grad_norm: 1.0
+accumulation_steps: 1
+
+# GPU Configuration
+use_gpu: True
+gpus: 1

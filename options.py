@@ -58,6 +58,15 @@ def get_parser():
     parser.add_argument("--weight_decay", default=1e-5, type=float)
     parser.add_argument("--accumulation_steps", default=4, type=int)
     parser.add_argument("--test_path", action='store_true')
+    
+    # NeCTI-specific args
+    parser.add_argument("--data_path", default="/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data", type=str,
+                       help="Base path to NeCTIS Model Data")
+    parser.add_argument("--granularity", default="Coarse", type=str, choices=['Coarse', 'Finegrain'],
+                       help="Compound granularity level")
+    parser.add_argument("--depth", default=6, type=int, help="Depth of DiT model")
+    parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm for clipping")
+    
     args = parser.parse_args()
     default_path = os.path.join(os.getcwd(), "configs", args.config_file)
     with open(default_path, 'r') as f:
@@ -65,3 +74,9 @@ def get_parser():
     parser.set_defaults(**default_args_from_file)
 
     return parser
+
+
+def get_args():
+    """Wrapper to get parsed arguments"""
+    parser = get_parser()
+    return parser.parse_args()
