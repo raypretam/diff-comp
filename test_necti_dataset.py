@@ -49,11 +49,25 @@ def test_dataset(label_set, granularity='Coarse'):
             print(f"Number of sentences: {len(dataset)}")
             
             # Show first example
-            tokens, labels = dataset[0]
+            example = dataset[0]
+            tokens = example['tokens']
+            labels = example['labels']
+            compounds = example['compounds']
+            
             print(f"\nFirst example:")
-            print(f"Tokens: {tokens[:10]}...")  # Show first 10 tokens
-            print(f"Labels: {labels[:10]}...")
+            print(f"Tokens: {' '.join(tokens[:15])}...")  # Show first 15 tokens
+            print(f"Labels: {labels[:15]}...")
             print(f"Token count: {len(tokens)}")
+            print(f"\nCompounds found: {len(compounds)}")
+            
+            for i, comp in enumerate(compounds[:3]):  # Show first 3 compounds
+                print(f"\n  Compound {i+1}:")
+                print(f"    Span: [{comp['start']}:{comp['end']+1}]")
+                print(f"    Tokens (WX): {' '.join(comp['tokens'])}")
+                print(f"    Tokens (Devanagari): {' '.join(comp['tokens_devanagari'])}")
+                print(f"    Type: {comp['type']}")
+                print(f"    Level: {comp['level']}")
+                print(f"    Internal types: {comp['internal_types']}")
             
         except FileNotFoundError as e:
             print(f"File not found: {e}")
@@ -83,12 +97,16 @@ def test_collator(label_set):
     
     # Get first batch
     batch = next(iter(dataloader))
-    input_ids, attention_mask, seq_labels = batch
+    input_ids = batch['input_ids']
+    attention_mask = batch['attention_mask']
+    seq_labels = batch['seq_labels']
+    compounds = batch['compounds']
     
     print(f"\nBatch shapes:")
     print(f"Input IDs: {input_ids.shape}")
     print(f"Attention Mask: {attention_mask.shape}")
     print(f"Sequence Labels: {seq_labels.shape}")
+    print(f"Compounds: {len(compounds)} sentences")
     
     print(f"\nFirst sequence in batch:")
     print(f"Input IDs: {input_ids[0][:20]}")
@@ -99,6 +117,13 @@ def test_collator(label_set):
     valid_labels = seq_labels[seq_labels != -100]
     print(f"Valid labels: {valid_labels.shape[0]}")
     print(f"Padding labels (-100): {(seq_labels == -100).sum().item()}")
+    
+    print(f"\nCompounds in first sentence:")
+    for i, comp in enumerate(compounds[0]):
+        print(f"  Compound {i+1}:")
+        print(f"    WX: {comp['tokens']}")
+        print(f"    Devanagari: {comp['tokens_devanagari']}")
+        print(f"    Type: {comp['type']}, Span: [{comp['start']}:{comp['end']+1}]")
 
 def main():
     """Run all tests"""

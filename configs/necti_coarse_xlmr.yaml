@@ -36,7 +36,7 @@ max_epochs: 20
 max_steps: 250000
 warmup_steps: 1000
 warmup_ratio: 0.01
-optimizer_type: 'AdamW'
+optimizer_type: 'adam'
 lr_scheduler_type: 'linear'
 lr_bert: 2e-5  # Lower learning rate for pretrained XLM-R
 lr_other: 5e-4  # Higher learning rate for diffusion components

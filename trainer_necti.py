@@ -148,16 +148,17 @@ class NeCTITrainer:
             {'params': other_params, 'lr': self.args.lr_other}
         ]
         
-        if optimizer_type == 'adam':
+        if optimizer_type.lower() in ['adam', 'adamw']:
             optimizer = AdamW(optimizer_params, weight_decay=self.args.weight_decay)
         else:
             raise NotImplementedError(f"Optimizer {optimizer_type} not implemented")
         
         lr_scheduler = get_lr_scheduler(
-            optimizer,
-            lr_scheduler_type,
-            self.steps,
-            self.args.warmup_steps
+            name=lr_scheduler_type,
+            optimizer=optimizer,
+            num_warmup_steps=self.args.warmup_steps,
+            num_training_steps=self.steps,
+            num_cycles=self.args.num_cycles if hasattr(self.args, 'num_cycles') else None
         )
         
         return optimizer, lr_scheduler
@@ -183,7 +184,9 @@ class NeCTITrainer:
             
             pbar = tqdm(self.train_dataloader, desc="Training")
             for batch in pbar:
-                input_ids, attention_mask, seq_labels = [b.to(self.device) for b in batch]
+                input_ids = batch['input_ids'].to(self.device)
+                attention_mask = batch['attention_mask'].to(self.device)
+                seq_labels = batch['seq_labels'].to(self.device)
                 
                 loss = self.model(input_ids, attention_mask, seq_labels)
                 
@@ -233,6 +236,7 @@ class NeCTITrainer:
                 print(f"New best F1: {best_f1:.4f} - Model saved!")
         
         # Final evaluation on test set
+        
         print("\n" + "=" * 50)
         print("Training completed! Evaluating on test set...")
         print("=" * 50 + "\n")
@@ -265,9 +269,13 @@ class NeCTITrainer:
         
         all_predictions = []
         all_labels = []
+        all_compounds = []
         
         for batch in tqdm(dataloader, desc=f"Evaluating {split_name}"):
-            input_ids, attention_mask, seq_labels = [b.to(self.device) for b in batch]
+            input_ids = batch['input_ids'].to(self.device)
+            attention_mask = batch['attention_mask'].to(self.device)
+            seq_labels = batch['seq_labels'].to(self.device)
+            compounds = batch['compounds']
             
             predictions, _ = self.model(input_ids, attention_mask, seq_labels)
             
@@ -279,6 +287,7 @@ class NeCTITrainer:
             
             all_predictions.extend(batch_preds.tolist())
             all_labels.extend(batch_labels.tolist())
+            all_compounds.extend(compounds)
         
         # Calculate metrics
         results = self._calculate_metrics(all_predictions, all_labels)
@@ -290,12 +299,13 @@ class NeCTITrainer:
         predictions = np.array(predictions)
         labels = np.array(labels)
         
-        # For compound identification: treat CompNo as negative class
-        compno_id = self.label_set.label2id('CompNo')
+        # For compound identification: treat No_rel and root as negative class
+        no_rel_id = self.label_set.label2id('No_rel')
+        root_id = self.label_set.label2id('root')
         
         # Binary classification: compound vs non-compound
-        pred_is_compound = (predictions != compno_id)
-        label_is_compound = (labels != compno_id)
+        pred_is_compound = (predictions != no_rel_id) & (predictions != root_id)
+        label_is_compound = (labels != no_rel_id) & (labels != root_id)
         
         tp = np.sum(pred_is_compound & label_is_compound)
         fp = np.sum(pred_is_compound & ~label_is_compound)
@@ -341,7 +351,7 @@ class NeCTITrainer:
         model_path = os.path.join(save_dir, 'best_model.pt')
         
         if os.path.exists(model_path):
-            checkpoint = torch.load(model_path, map_location=self.device)
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             print(f"Loaded best model from epoch {checkpoint['epoch']} with F1 {checkpoint['f1_score']:.4f}")
         else:
