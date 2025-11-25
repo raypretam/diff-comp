@@ -19,7 +19,7 @@ import json
 class NeCTIInference:
     """Inference for nested compound identification"""
     
-    def __init__(self, model_path: str, data_path: str, granularity: str, device: str = 'cuda'):
+    def __init__(self, model_path: str, data_path: str, granularity: str, use_context: bool = False, device: str = 'cuda'):
         """
         Initialize inference
         
@@ -27,11 +27,13 @@ class NeCTIInference:
             model_path: Path to saved model checkpoint
             data_path: Path to DepNeCTI data directory
             granularity: 'Coarse' or 'Finegrain'
+            use_context: Whether to use 'With Context' data
             device: Device to run inference on
         """
         self.model_path = model_path
         self.data_path = data_path
         self.granularity = granularity
+        self.use_context = use_context
         
         # Setup device
         if device == 'cuda' and torch.cuda.is_available():
@@ -52,9 +54,12 @@ class NeCTIInference:
         # Load label set
         self.label_set = NeCTILabelSet(
             data_path=self.data_path,
-            granularity=self.granularity
+            granularity=self.granularity,
+            use_context=self.use_context
         )
-        print(f"\nNumber of classes: {len(self.label_set)}")
+        context_mode = "With Context" if self.use_context else "Without Context"
+        print(f"\nUsing data mode: {context_mode}")
+        print(f"Number of classes: {len(self.label_set)}")
         
         # Initialize model
         self.model = BitDit(
@@ -91,7 +96,7 @@ class NeCTIInference:
     
     def _get_dataloader(self, mode: str, batch_size: int = 8):
         """Create dataloader for specified split"""
-        dataset = NeCTIDataset(self.data_path, mode, self.label_set)
+        dataset = NeCTIDataset(self.data_path, mode, self.label_set, use_context=self.use_context)
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -126,6 +131,8 @@ class NeCTIInference:
         all_labels = []
         all_compounds = []
         detailed_predictions = []
+        all_pred_relations = []
+        all_true_relations = []
         
         for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Evaluating {split_name}")):
             input_ids = batch['input_ids'].to(self.device)
@@ -149,32 +156,52 @@ class NeCTIInference:
                 all_predictions.extend(pred_seq.tolist())
                 all_labels.extend(label_seq.tolist())
                 
+                # Convert to relations format for USS/LSS calculation
+                word_id_list = [wid for wid in word_ids[i] if wid is not None]
+                pred_labels_decoded = [self.label_set.id2label(p) for p in pred_seq]
+                true_labels_decoded = [self.label_set.id2label(l) for l in label_seq]
+                
+                # Create relations: [token_idx, head_idx, relation_type]
+                pred_relations = []
+                true_relations = []
+                for j, (pred_label, true_label) in enumerate(zip(pred_labels_decoded, true_labels_decoded)):
+                    if j < len(word_id_list):
+                        token_idx = word_id_list[j] + 1  # 1-indexed
+                        # For USS/LSS, we need (token_idx, head_idx, relation)
+                        # Since we don't have head info from predictions, use token_idx as placeholder
+                        pred_relations.append([token_idx, 0, pred_label])
+                        true_relations.append([token_idx, 0, true_label])
+                
+                all_pred_relations.append(pred_relations)
+                all_true_relations.append(true_relations)
+                
                 # Store detailed predictions if requested
                 if save_predictions:
                     sample_compounds = compounds[i] if i < len(compounds) else []
                     
-                    # Decode predictions
-                    pred_labels = [self.label_set.id2label(p) for p in pred_seq]
-                    true_labels = [self.label_set.id2label(l) for l in label_seq]
-                    
                     detailed_predictions.append({
                         'batch_idx': batch_idx,
                         'sample_idx': i,
-                        'predictions': pred_labels,
-                        'true_labels': true_labels,
+                        'predictions': pred_labels_decoded,
+                        'true_labels': true_labels_decoded,
                         'compounds': sample_compounds
                     })
         
         # Calculate metrics
-        results = self._calculate_metrics(all_predictions, all_labels)
+        results = self._calculate_metrics(all_predictions, all_labels, all_pred_relations, all_true_relations)
         
         # Print results
         print(f"\n{split_name.upper()} Results:")
         print("-" * 50)
-        print(f"Precision: {results['precision']:.4f}")
-        print(f"Recall:    {results['recall']:.4f}")
-        print(f"F1 Score:  {results['f1']:.4f}")
-        print(f"Accuracy:  {results['accuracy']:.4f}")
+        print(f"Precision:    {results['precision']:.4f}")
+        print(f"Recall:       {results['recall']:.4f}")
+        print(f"F1 Score:     {results['f1']:.4f}")
+        print(f"Accuracy:     {results['accuracy']:.4f}")
+        print(f"USS (F1):     {results['uss']:.4f}")
+        print(f"LSS (F1):     {results['lss']:.4f}")
+        print(f"LSS Prec:     {results['lss_precision']:.4f}")
+        print(f"LSS Recall:   {results['lss_recall']:.4f}")
+        print(f"Exact Match:  {results['exact_match']:.4f}")
         print("-" * 50)
         
         # Add detailed predictions to results
@@ -183,8 +210,9 @@ class NeCTIInference:
         
         return results
     
-    def _calculate_metrics(self, predictions: List[int], labels: List[int]) -> Dict[str, float]:
-        """Calculate precision, recall, F1, and accuracy"""
+    def _calculate_metrics(self, predictions: List[int], labels: List[int], 
+                          all_pred_relations: List[List], all_true_relations: List[List]) -> Dict[str, float]:
+        """Calculate precision, recall, F1, accuracy, USS, and LSS"""
         predictions = np.array(predictions)
         labels = np.array(labels)
         
@@ -208,6 +236,10 @@ class NeCTIInference:
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
         
+        # Calculate USS and LSS
+        uss = self._calculate_uss(all_true_relations, all_pred_relations)
+        lss_metrics = self._calculate_lss(all_true_relations, all_pred_relations)
+        
         return {
             'precision': precision,
             'recall': recall,
@@ -216,8 +248,97 @@ class NeCTIInference:
             'tp': int(tp),
             'fp': int(fp),
             'fn': int(fn),
-            'tn': int(tn)
+            'tn': int(tn),
+            'uss': uss,
+            'lss': lss_metrics['f1'],
+            'lss_precision': lss_metrics['precision'],
+            'lss_recall': lss_metrics['recall'],
+            'exact_match': lss_metrics['exact_match']
         }
+    
+    def _calculate_uss(self, true_relations: List[List], pred_relations: List[List]) -> float:
+        """Calculate Unlabeled Span Score (USS)"""
+        correct = 0
+        true_count = 0
+        pred_count = 0
+        
+        for true_rels, pred_rels in zip(true_relations, pred_relations):
+            # Filter out No_rel and root
+            true_spans = [(r[0], r[1]) for r in true_rels if r[2] != 'No_rel' and r[2] != 'root']
+            pred_spans = [(r[0], r[1]) for r in pred_rels if r[2] != 'No_rel' and r[2] != 'root']
+            
+            for span in pred_spans:
+                if span in true_spans:
+                    correct += 1
+            
+            true_count += len(true_spans)
+            pred_count += len(pred_spans)
+        
+        p = correct / pred_count if pred_count != 0 else 0
+        r = correct / true_count if true_count != 0 else 0
+        f1 = 2 * p * r / (p + r) if p != 0 and r != 0 else 0
+        
+        return f1
+    
+    def _calculate_lss(self, true_relations: List[List], pred_relations: List[List]) -> Dict[str, float]:
+        """Calculate Labeled Span Score (LSS) and Exact Match"""
+        correct = 0
+        predict_count = 0
+        true_count = 0
+        em = 0
+        tot_comps = 0
+        
+        for true_rels, pred_rels in zip(true_relations, pred_relations):
+            # Filter out No_rel and root
+            true_rels_filtered = [r for r in true_rels if r[2] != 'No_rel' and r[2] != 'root']
+            pred_rels_filtered = [r for r in pred_rels if r[2] != 'No_rel' and r[2] != 'root']
+            
+            # Convert to string for comparison
+            tr_copy = [','.join(map(str, lst)) for lst in true_rels_filtered]
+            pr_copy = [','.join(map(str, lst)) for lst in pred_rels_filtered]
+            
+            # Extract compounds (groups ending with Comp_root)
+            tr_comps = self._comps_from_relations(tr_copy)
+            pr_comps = self._comps_from_relations(pr_copy)
+            
+            # Exact match count
+            for comp in pr_comps:
+                if comp in tr_comps:
+                    em += 1
+            tot_comps += len(tr_comps)
+            
+            # Count matching relations
+            for rel in pred_rels_filtered:
+                if rel in true_rels_filtered:
+                    correct += 1
+            
+            predict_count += len(pred_rels_filtered)
+            true_count += len(true_rels_filtered)
+        
+        p = correct / predict_count if predict_count != 0 else 0
+        r = correct / true_count if true_count != 0 else 0
+        f1 = 2 * p * r / (p + r) if p != 0 and r != 0 else 0
+        em_per = em / tot_comps if tot_comps != 0 else 0
+        
+        return {
+            'precision': p,
+            'recall': r,
+            'f1': f1,
+            'exact_match': em_per
+        }
+    
+    def _comps_from_relations(self, relations: List[str]) -> List[List[str]]:
+        """Extract compounds from relations list"""
+        lst = []
+        nested_comp = []
+        for rel in relations:
+            if 'Comp_root' in rel:
+                lst.append(rel)
+                nested_comp.append(lst)
+                lst = []
+            else:
+                lst.append(rel)
+        return nested_comp
     
     def run_inference(self, splits=['test'], batch_size=8, save_predictions=False, output_dir=None):
         """
@@ -272,11 +393,13 @@ def main():
     parser.add_argument('--model_path', type=str, required=True,
                         help='Path to saved model checkpoint')
     parser.add_argument('--data_path', type=str, 
-                        default='/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data/With Context',
+                        default='/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data',
                         help='Path to DepNeCTI data directory')
     parser.add_argument('--granularity', type=str, default='Coarse',
                         choices=['Coarse', 'Finegrain'],
                         help='Granularity level')
+    parser.add_argument('--use_context', action='store_true',
+                        help='Use "With Context" data instead of "Without Context" data')
     parser.add_argument('--splits', type=str, nargs='+', default=['test'],
                         choices=['train', 'dev', 'test', 'ood'],
                         help='Splits to evaluate on')
@@ -297,6 +420,7 @@ def main():
         model_path=args.model_path,
         data_path=args.data_path,
         granularity=args.granularity,
+        use_context=args.use_context,
         device=args.device
     )
     
@@ -315,10 +439,13 @@ def main():
     
     for split, metrics in results.items():
         print(f"{split.upper()}:")
-        print(f"  F1:        {metrics['f1']:.4f}")
-        print(f"  Precision: {metrics['precision']:.4f}")
-        print(f"  Recall:    {metrics['recall']:.4f}")
-        print(f"  Accuracy:  {metrics['accuracy']:.4f}")
+        print(f"  F1:          {metrics['f1']:.4f}")
+        print(f"  Precision:   {metrics['precision']:.4f}")
+        print(f"  Recall:      {metrics['recall']:.4f}")
+        print(f"  Accuracy:    {metrics['accuracy']:.4f}")
+        print(f"  USS (F1):    {metrics['uss']:.4f}")
+        print(f"  LSS (F1):    {metrics['lss']:.4f}")
+        print(f"  Exact Match: {metrics['exact_match']:.4f}")
         print()
 
 

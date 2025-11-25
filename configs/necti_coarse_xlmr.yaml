@@ -29,7 +29,7 @@ granularity: 'Coarse'
 
 # Training Configuration
 logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
-output_dir: 'saved_models/necti_coarse'
+output_dir: 'saved_models/necti_coarse_without_context'
 batch_size: 16
 num_workers: 4
 max_epochs: 20

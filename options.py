@@ -64,6 +64,8 @@ def get_parser():
                        help="Base path to NeCTIS Model Data")
     parser.add_argument("--granularity", default="Coarse", type=str, choices=['Coarse', 'Finegrain'],
                        help="Compound granularity level")
+    parser.add_argument("--use_context", action='store_true',
+                       help="Use 'With Context' data instead of 'Without Context' data")
     parser.add_argument("--depth", default=6, type=int, help="Depth of DiT model")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm for clipping")
     

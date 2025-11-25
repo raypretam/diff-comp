@@ -18,12 +18,17 @@ GRANULARITY="Coarse"
 BACKBONE="xlm-roberta-base"
 DATA_PATH="/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data"
 
+# Context mode: uncomment one of the following
+# USE_CONTEXT=""  # Without Context (default)
+USE_CONTEXT="--use_context"  # With Context
+
 # Run training
 python trainer_necti.py \
     --config_file ${CONFIG_FILE} \
     --granularity ${GRANULARITY} \
     --backbone ${BACKBONE} \
     --data_path ${DATA_PATH} \
+    ${USE_CONTEXT} \
     --logger wandb \
     --batch_size 16 \
     --max_epochs 20 \

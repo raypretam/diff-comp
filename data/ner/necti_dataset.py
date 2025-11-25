@@ -15,16 +15,19 @@ from indic_transliteration import sanscript
 class NeCTILabelSet:
     """Label set for nested compound identification"""
     
-    def __init__(self, data_path: str, granularity: str = 'Coarse'):
+    def __init__(self, data_path: str, granularity: str = 'Coarse', use_context: bool = False):
         """
         Args:
             data_path: Base path to NeCTIS Model Data
             granularity: 'Coarse' or 'Finegrain'
+            use_context: Whether to use 'With Context' (True) or 'Without Context' (False) data
         """
         assert granularity in ['Coarse', 'Finegrain'], "granularity must be 'Coarse' or 'Finegrain'"
         
         self.granularity = granularity
-        self.data_path = os.path.join(data_path, 'With Context', granularity)
+        self.use_context = use_context
+        context_dir = 'With Context' if use_context else 'Without Context'
+        self.data_path = os.path.join(data_path, context_dir, granularity)
         
         # Read all splits to collect labels
         self._labelset = set()
@@ -81,22 +84,25 @@ class NeCTILabelSet:
 class NeCTIDataset(Dataset):
     """Dataset for nested compound identification"""
     
-    def __init__(self, data_path: str, mode: str, label_set: NeCTILabelSet):
+    def __init__(self, data_path: str, mode: str, label_set: NeCTILabelSet, use_context: bool = False):
         """
         Args:
             data_path: Base path to NeCTIS Model Data
             mode: 'train', 'dev', 'test', or 'ood'
             label_set: NeCTILabelSet instance
+            use_context: Whether to use 'With Context' (True) or 'Without Context' (False) data
         """
         super(NeCTIDataset, self).__init__()
         assert mode in ['train', 'dev', 'test', 'ood'], "mode must be train/dev/test/ood"
         
         self.label_set = label_set
         self.mode = mode
+        self.use_context = use_context
         
         # Construct file path
+        context_dir = 'With Context' if use_context else 'Without Context'
         filename = f"{label_set.granularity}_{mode}_san"
-        filepath = os.path.join(data_path, 'With Context', label_set.granularity, filename)
+        filepath = os.path.join(data_path, context_dir, label_set.granularity, filename)
         
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Data file not found: {filepath}")
@@ -201,10 +207,10 @@ class NeCTIDataset(Dataset):
                 # Get the compound level (Comp2, Comp3, etc.)
                 comp_level = root['comp_label']
                 
-                # Get tokens in WX and transliterate to Devanagari
-                wx_tokens = [t['token'] for t in compound_tokens]
-                devanagari_tokens = [sanscript.transliterate(token, sanscript.WX, sanscript.DEVANAGARI) 
-                                    for token in wx_tokens]
+                # Get tokens in slp1 and transliterate to Devanagari
+                slp1_tokens = [t['token'] for t in compound_tokens]
+                devanagari_tokens = [sanscript.transliterate(token, sanscript.SLP1, sanscript.DEVANAGARI) 
+                                    for token in slp1_tokens]
                 
                 compounds.append({
                     'start': start_idx,
@@ -212,7 +218,7 @@ class NeCTIDataset(Dataset):
                     'type': compound_type,
                     'level': comp_level,
                     'internal_types': list(comp_types),
-                    'tokens': wx_tokens,
+                    'tokens': slp1_tokens,
                     'tokens_devanagari': devanagari_tokens
                 })
         

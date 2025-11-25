@@ -26,8 +26,14 @@ class NeCTITrainer:
         self.args = args
         self._print_hyperparameters()
         
+        # Set default value for use_context if not present
+        if not hasattr(self.args, 'use_context'):
+            self.args.use_context = False
+        
+        context_mode = "with_ctx" if self.args.use_context else "no_ctx"
+        
         if self.args.logger == 'wandb':
-            run_name = f"necti-{args.granularity}--lr_bert_{args.lr_bert}--lr_other_{args.lr_other}--epochs_{args.max_epochs}"
+            run_name = f"necti-{args.granularity}-{context_mode}--lr_bert_{args.lr_bert}--lr_other_{args.lr_other}--epochs_{args.max_epochs}"
             wandb.init(project="DiffusionSL-NeCTI", name=run_name)
             wandb.config.update(self.args)
             wandb.define_metric("f1", summary="max")
@@ -40,7 +46,8 @@ class NeCTITrainer:
         # Load label set
         self.label_set = NeCTILabelSet(
             data_path=self.dataset_path,
-            granularity=self.args.granularity
+            granularity=self.args.granularity,
+            use_context=self.args.use_context
         )
         
         if self.args.num_classes != len(self.label_set):
@@ -96,7 +103,7 @@ class NeCTITrainer:
     
     def _get_dataloader(self, mode: str, bsz: int):
         """Create dataloader for specified split"""
-        dataset = NeCTIDataset(self.dataset_path, mode, self.label_set)
+        dataset = NeCTIDataset(self.dataset_path, mode, self.label_set, use_context=self.args.use_context)
         shuffle = (mode == 'train')
         dataloader = DataLoader(
             dataset,
@@ -323,7 +330,8 @@ class NeCTITrainer:
     
     def _save_model(self, epoch, f1_score):
         """Save model checkpoint"""
-        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}')
+        context_mode = "with_ctx" if self.args.use_context else "no_ctx"
+        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}')
         os.makedirs(save_dir, exist_ok=True)
         
         save_path = os.path.join(save_dir, f'best_model_epoch{epoch}_f1{f1_score:.4f}.pt')
@@ -347,7 +355,8 @@ class NeCTITrainer:
     
     def _load_best_model(self):
         """Load best model for final evaluation"""
-        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}')
+        context_mode = "with_ctx" if self.args.use_context else "no_ctx"
+        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}')
         model_path = os.path.join(save_dir, 'best_model.pt')
         
         if os.path.exists(model_path):
