@@ -7,3 +7,7 @@ __pycache__/
 .idea/
 .ipynb_checkpoints/
 logs/
+data/ner/__pycache__/
+data/ner/__pycache__/necti_dataset.cpython-312.pyc
+inference_results/
+saved_models/

@@ -1,0 +1,107 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                     NeCTI Context Mode - Quick Reference                    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+┌─ TRAINING ─────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  1. Edit training script:                                                   │
+│     - Open: run_necti_coarse.sh OR run_necti_finegrain.sh                  │
+│     - Find: USE_CONTEXT line                                                │
+│     - Set:  USE_CONTEXT=""              (for Without Context)               │
+│        OR:  USE_CONTEXT="--use_context" (for With Context)                  │
+│                                                                              │
+│  2. Run training:                                                           │
+│     ./run_necti_coarse.sh                                                   │
+│                                                                              │
+│  3. Model saved to:                                                         │
+│     saved_models/necti_Coarse_no_ctx/    (without context)                  │
+│     saved_models/necti_Coarse_with_ctx/  (with context)                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ INFERENCE ────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  Usage: ./run_inference_necti.sh [granularity] [context_mode]              │
+│                                                                              │
+│  Examples:                                                                  │
+│    ./run_inference_necti.sh coarse no_ctx      # Without context            │
+│    ./run_inference_necti.sh coarse with_ctx    # With context               │
+│    ./run_inference_necti.sh finegrain no_ctx   # Fine-grained, no context   │
+│    ./run_inference_necti.sh finegrain with_ctx # Fine-grained, with context │
+│                                                                              │
+│  Results saved to:                                                          │
+│    inference_results/necti_Coarse_no_ctx/    (without context)              │
+│    inference_results/necti_Coarse_with_ctx/  (with context)                 │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ PYTHON COMMANDS ──────────────────────────────────────────────────────────┐
+│                                                                              │
+│  Training WITHOUT context (default):                                        │
+│    python trainer_necti.py \                                                │
+│      --config_file necti_coarse_xlmr.yaml \                                 │
+│      --granularity Coarse \                                                 │
+│      --data_path "/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data"         │
+│                                                                              │
+│  Training WITH context:                                                     │
+│    python trainer_necti.py \                                                │
+│      --config_file necti_coarse_xlmr.yaml \                                 │
+│      --granularity Coarse \                                                 │
+│      --data_path "/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data" \       │
+│      --use_context                                                          │
+│                                                                              │
+│  Inference WITHOUT context:                                                 │
+│    python inference_necti.py \                                              │
+│      --model_path "./saved_models/necti_Coarse_no_ctx/best_model.pt" \     │
+│      --granularity Coarse \                                                 │
+│      --splits test dev ood                                                  │
+│                                                                              │
+│  Inference WITH context:                                                    │
+│    python inference_necti.py \                                              │
+│      --model_path "./saved_models/necti_Coarse_with_ctx/best_model.pt" \   │
+│      --granularity Coarse \                                                 │
+│      --use_context \                                                        │
+│      --splits test dev ood                                                  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ DIRECTORY STRUCTURE ──────────────────────────────────────────────────────┐
+│                                                                              │
+│  Data:                                                                      │
+│    /home/pretam-pg/DepNeCTI/data/NeCTIS Model Data/                         │
+│    ├── Without Context/                                                     │
+│    │   ├── Coarse/                                                          │
+│    │   └── Finegrain/                                                       │
+│    └── With Context/                                                        │
+│        ├── Coarse/                                                          │
+│        └── Finegrain/                                                       │
+│                                                                              │
+│  Models:                                                                    │
+│    saved_models/                                                            │
+│    ├── necti_Coarse_no_ctx/                                                 │
+│    ├── necti_Coarse_with_ctx/                                               │
+│    ├── necti_Finegrain_no_ctx/                                              │
+│    └── necti_Finegrain_with_ctx/                                            │
+│                                                                              │
+│  Results:                                                                   │
+│    inference_results/                                                       │
+│    ├── necti_Coarse_no_ctx/                                                 │
+│    ├── necti_Coarse_with_ctx/                                               │
+│    ├── necti_Finegrain_no_ctx/                                              │
+│    └── necti_Finegrain_with_ctx/                                            │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌─ KEY POINTS ───────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  ✓ Context mode must match between training and inference                  │
+│  ✓ Models are saved separately for each context mode                       │
+│  ✓ Default behavior: WITHOUT context (backward compatible)                 │
+│  ✓ WandB run names include context mode                                    │
+│  ✓ Can train and evaluate both modes simultaneously                        │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+For detailed documentation, see:
+  - CONTEXT_MODE_GUIDE.md    (comprehensive guide)
+  - CONTEXT_MODE_SUMMARY.md  (implementation summary)
