@@ -4,12 +4,12 @@
 # Model Configuration
 base: 'ner'
 dataset: 'necti_finegrain'
-num_classes: 20  # Will be adjusted automatically based on data
+num_classes: 69  # Will be adjusted automatically based on data
 backbone: 'xlm-roberta-base'  # XLM-R encoder
 time_steps: 1000
 sampling_steps: 10
 ddim_sampling_eta: 1.0
-self_condition: False
+self_condition: True
 snr_scale: 2.0
 dim_model: 768  # XLM-R hidden size
 dim_time: 256
@@ -17,7 +17,7 @@ depth: 6
 objective: 'pred_x0'
 noise_schedule: 'linear'
 loss_type: 'l2'
-add_lstm: False
+add_lstm: True
 freeze_bert: False
 max_length: 256
 network_architecture: 'transformer'
@@ -32,7 +32,7 @@ logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
 output_dir: 'saved_models/necti_finegrain'
 batch_size: 16
 num_workers: 4
-max_epochs: 20
+max_epochs: 30
 max_steps: 250000
 warmup_steps: 1000
 warmup_ratio: 0.01
