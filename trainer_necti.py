@@ -82,7 +82,7 @@ class NeCTITrainer:
         
         # Initialize tokenizer for XLM-R
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
-        self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length)
+        self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length, add_lstm=self.args.add_lstm)
         
         # Create data loaders
         self.train_dataloader = self._get_dataloader('train', self.args.batch_size)
@@ -194,8 +194,12 @@ class NeCTITrainer:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 seq_labels = batch['seq_labels'].to(self.device)
+                words2pieces = batch.get('words2pieces', None)  # Get words2pieces if present
+                if words2pieces is not None:
+                    words2pieces = words2pieces.to(self.device)
                 
-                loss = self.model(input_ids, attention_mask, seq_labels)
+                # Forward pass with optional words2pieces
+                loss = self.model(input_ids, attention_mask, seq_labels, words2pieces)
                 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -282,15 +286,43 @@ class NeCTITrainer:
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             seq_labels = batch['seq_labels'].to(self.device)
+            words2pieces = batch.get('words2pieces', None)
+            if words2pieces is not None:
+                words2pieces = words2pieces.to(self.device)
+            
             compounds = batch['compounds']
             
-            predictions, _ = self.model(input_ids, attention_mask, seq_labels)
+            with torch.no_grad():
+                # Forward pass with optional words2pieces
+                predictions, path_x = self.model(input_ids, attention_mask, seq_labels, words2pieces)
+            
+            # When LSTM is used, we need to convert seq_labels to word-level to match predictions
+            if self.args.add_lstm and words2pieces is not None:
+                # Convert piece-level labels to word-level
+                bsz, num_words, max_pieces = words2pieces.shape
+                word_seq_labels = torch.full((bsz, num_words), -100, dtype=seq_labels.dtype, device=seq_labels.device)
+                
+                valid_pieces_mask = words2pieces.gt(0)
+                for b in range(bsz):
+                    for w in range(num_words):
+                        valid_indices = words2pieces[b, w][valid_pieces_mask[b, w]]
+                        if len(valid_indices) > 0:
+                            seq_len = seq_labels.shape[1]
+                            valid_indices = valid_indices.clamp(0, seq_len - 1)
+                            # Get label for first valid piece of this word
+                            first_piece_label = seq_labels[b, valid_indices[0]]
+                            word_seq_labels[b, w] = first_piece_label
+                
+                # Use word-level labels for evaluation
+                eval_labels = word_seq_labels
+            else:
+                eval_labels = seq_labels
             
             # Collect predictions and labels (excluding padding)
-            mask = (seq_labels != -100)
+            mask = (eval_labels != -100)
             
             batch_preds = predictions[mask].cpu().numpy()
-            batch_labels = seq_labels[mask].cpu().numpy()
+            batch_labels = eval_labels[mask].cpu().numpy()
             
             all_predictions.extend(batch_preds.tolist())
             all_labels.extend(batch_labels.tolist())

@@ -287,9 +287,10 @@ class NeCTIDataset(Dataset):
 class NeCTICollator:
     """Collator for NeCTI dataset compatible with DiffusionSL"""
     
-    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 256):
+    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 256, add_lstm: bool = False):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.add_lstm = add_lstm
     
     def __call__(self, batch):
         # Extract data from batch items
@@ -334,10 +335,69 @@ class NeCTICollator:
         assert len(seq_labels) == len(sentences)
         assert len(seq_labels[0]) == len(input_ids[0])
         
-        return {
+        result = {
             'input_ids': torch.as_tensor(input_ids, dtype=torch.long),
             'attention_mask': torch.as_tensor(attention_mask, dtype=torch.long),
             'seq_labels': torch.as_tensor(seq_labels, dtype=torch.long),
             'compounds': compounds,  # Keep compound span information
             'word_ids': word_ids  # Keep word-to-token mapping
         }
+        
+        # Add words2pieces mapping if LSTM is used
+        if self.add_lstm:
+            words2pieces = self._create_words2pieces_mapping(word_ids, input_ids.shape[1])
+            result['words2pieces'] = words2pieces
+        
+        return result
+    
+    def _create_words2pieces_mapping(self, word_ids_batch: List[List[int]], max_seq_len: int) -> torch.Tensor:
+        """
+        Create a mapping tensor from words to their subword pieces.
+        
+        Args:
+            word_ids_batch: List of word_ids for each sample in batch
+            max_seq_len: Maximum sequence length (number of pieces)
+        
+        Returns:
+            words2pieces: Tensor of shape [batch_size, max_words, max_pieces_per_word]
+                         where words2pieces[b, w, p] = 1 if piece p belongs to word w in batch b
+        """
+        batch_size = len(word_ids_batch)
+        
+        # Find max number of words and max pieces per word
+        max_words = 0
+        max_pieces_per_word = 0
+        
+        word_to_pieces_list = []
+        for word_ids in word_ids_batch:
+            # Group pieces by word
+            word_to_pieces = {}
+            for piece_idx, word_idx in enumerate(word_ids):
+                if word_idx is not None:  # Skip special tokens
+                    if word_idx not in word_to_pieces:
+                        word_to_pieces[word_idx] = []
+                    word_to_pieces[word_idx].append(piece_idx)
+            
+            word_to_pieces_list.append(word_to_pieces)
+            
+            if word_to_pieces:
+                max_words = max(max_words, max(word_to_pieces.keys()) + 1)
+                max_pieces_per_word = max(max_pieces_per_word, 
+                                         max(len(pieces) for pieces in word_to_pieces.values()))
+        
+        # Handle edge case where there are no words
+        if max_words == 0:
+            max_words = 1
+        if max_pieces_per_word == 0:
+            max_pieces_per_word = 1
+        
+        # Create tensor [batch_size, max_words, max_pieces_per_word]
+        words2pieces = torch.zeros(batch_size, max_words, max_pieces_per_word, dtype=torch.long)
+        
+        for batch_idx, word_to_pieces in enumerate(word_to_pieces_list):
+            for word_idx, piece_indices in word_to_pieces.items():
+                for local_piece_idx, global_piece_idx in enumerate(piece_indices):
+                    if local_piece_idx < max_pieces_per_word:
+                        words2pieces[batch_idx, word_idx, local_piece_idx] = global_piece_idx
+        
+        return words2pieces

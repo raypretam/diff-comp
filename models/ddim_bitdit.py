@@ -136,6 +136,17 @@ class BitDit(nn.Module):
 
         self.bits = torch.ceil(torch.log2(torch.tensor(num_labels))).long()
         self.loss_type = loss_type
+        
+        # Add LSTM if specified
+        if add_lstm:
+            self.lstm = nn.LSTM(
+                input_size=dim_model,
+                hidden_size=dim_model // 2,
+                num_layers=1,
+                batch_first=True,
+                bidirectional=True
+            )
+        
         self.model = DiT(in_channels=self.bits.item(),
                          hidden_size=dim_model,
                          num_steps=self.timesteps,
@@ -338,31 +349,93 @@ class BitDit(nn.Module):
         Args:
             input_ids: [bsz, len]
             attention_mask: [bsz, len]
-            words2pieces: [bsz, word_len, piece_len]
+            words2pieces: [bsz, word_len, piece_len] - Required when add_lstm=True
             seq_labels: [bsz, len]
 
         Returns:
 
         """
+        # Validate words2pieces when LSTM is enabled
+        if self.add_lstm and words2pieces is None:
+            raise ValueError(
+                "words2pieces mapping is required when add_lstm=True. "
+                "Please ensure your dataset returns words2pieces tensor that maps words to subword pieces."
+            )
+        
         # feature extraction: [bsz, len_piece, d_model]
-        label_mask = (seq_labels != -100).long()
         bert_output = self.backbone(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
 
         if self.add_lstm:
-            min_value = torch.min(bert_output).item()
-            bert_output = bert_output.unsqueeze(dim=1).expand(-1, words2pieces.shape[1], -1, -1)
-            bert_output = torch.masked_fill(bert_output, words2pieces.eq(0).unsqueeze(dim=-1), min_value)
-            # [bsz, len_word, d_model]
-            features, _ = torch.max(bert_output, dim=2)
-            lengths = words2pieces.sum(dim=-1).gt(0).sum(dim=-1).cpu()
+            if words2pieces is None:
+                # Fallback: issue warning and use piece-level features
+                import warnings
+                warnings.warn(
+                    "words2pieces is None but add_lstm=True. Falling back to piece-level features. "
+                    "For optimal performance, ensure your collator generates words2pieces mapping."
+                )
+                features = bert_output
+                label_mask = (seq_labels != -100).long()
+                word_seq_labels = seq_labels
+            else:
+                # words2pieces: [bsz, num_words, max_pieces_per_word]
+                # bert_output: [bsz, seq_len, hidden_dim]
+                bsz, num_words, max_pieces = words2pieces.shape
+                _, seq_len, hidden_dim = bert_output.shape
+                
+                # Create word-level features by gathering pieces for each word
+                # [bsz, num_words, max_pieces, hidden_dim]
+                expanded_output = bert_output.unsqueeze(1).expand(bsz, num_words, seq_len, hidden_dim)
+                
+                # Create mask for valid piece indices
+                # [bsz, num_words, max_pieces]
+                valid_pieces_mask = words2pieces.gt(0)
+                
+                # Gather features for each word's pieces
+                # [bsz, num_words, max_pieces, hidden_dim]
+                word_piece_features = torch.zeros(bsz, num_words, max_pieces, hidden_dim, 
+                                                 device=bert_output.device, dtype=bert_output.dtype)
+                
+                # Also convert seq_labels to word-level
+                # [bsz, num_words]
+                word_seq_labels = torch.full((bsz, num_words), -100, dtype=seq_labels.dtype, device=seq_labels.device)
+                
+                for b in range(bsz):
+                    for w in range(num_words):
+                        valid_indices = words2pieces[b, w][valid_pieces_mask[b, w]]
+                        if len(valid_indices) > 0:
+                            # Clamp indices to valid range
+                            valid_indices = valid_indices.clamp(0, seq_len - 1)
+                            word_piece_features[b, w, :len(valid_indices)] = bert_output[b, valid_indices]
+                            
+                            # Get label for first valid piece of this word
+                            first_piece_label = seq_labels[b, valid_indices[0]]
+                            word_seq_labels[b, w] = first_piece_label
+                
+                # Max pooling over pieces to get word-level features
+                # Set invalid positions to very negative value for max pooling
+                min_value = torch.finfo(bert_output.dtype).min
+                word_piece_features = word_piece_features.masked_fill(
+                    ~valid_pieces_mask.unsqueeze(-1), min_value
+                )
+                
+                # [bsz, num_words, hidden_dim]
+                features, _ = torch.max(word_piece_features, dim=2)
+                
+                # Get actual lengths (number of words per sentence)
+                lengths = valid_pieces_mask.any(dim=-1).sum(dim=-1).cpu()
 
-            packed_features = pack_padded_sequence(features, lengths, batch_first=True, enforce_sorted=False)
-            packed_outs, (hidden, _) = self.lstm(packed_features)
-            # [bsz, word_len, d_model]
-            features = pad_packed_sequence(packed_outs, batch_first=True, total_length=max(lengths))[0]
+                packed_features = pack_padded_sequence(features, lengths, batch_first=True, enforce_sorted=False)
+                packed_outs, (hidden, _) = self.lstm(packed_features)
+                # [bsz, word_len, d_model]
+                features = pad_packed_sequence(packed_outs, batch_first=True, total_length=max(lengths))[0]
+                
+                # Create label mask at word level
+                label_mask = (word_seq_labels != -100).long()
         else:
             # [bsz, pieces_len, d_model]
             features = bert_output
+            label_mask = (seq_labels != -100).long()
+            word_seq_labels = seq_labels
 
         if not self.training:
             shape = (*features.shape[:2], self.bits.item())
@@ -380,8 +453,8 @@ class BitDit(nn.Module):
 
         if self.training:
             # categorical data to bits [bsz, ]
-            # gold and noised sequence labels
-            bits_seq_labels = decimal_to_bits(seq_labels, self.bits)
+            # gold and noised sequence labels (now at word-level if LSTM is used)
+            bits_seq_labels = decimal_to_bits(word_seq_labels, self.bits)
             bits_seq_labels *= self.scale
             noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
 
