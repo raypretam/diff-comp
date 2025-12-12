@@ -343,17 +343,18 @@ class BitDit(nn.Module):
         return sample_fn(shape, bert_features, attention_mask)
 
     def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, seq_labels: torch.tensor,
-                words2pieces: torch.tensor = None, ensemble: bool = False):
+                words2pieces: torch.tensor = None, ensemble: bool = False, use_mbr: bool = False,
+                num_mbr_samples: int = 5, mbr_temperature: float = 0.8):
         """
-
         Args:
             input_ids: [bsz, len]
             attention_mask: [bsz, len]
-            words2pieces: [bsz, word_len, piece_len] - Required when add_lstm=True
             seq_labels: [bsz, len]
-
-        Returns:
-
+            words2pieces: [bsz, word_len, piece_len] - Required when add_lstm=True
+            ensemble: Whether to use ensemble predictions
+            use_mbr: Whether to use MBR decoding
+            num_mbr_samples: Number of samples for MBR
+            mbr_temperature: Temperature for MBR sampling
         """
         # Validate words2pieces when LSTM is enabled
         if self.add_lstm and words2pieces is None:
@@ -439,44 +440,329 @@ class BitDit(nn.Module):
 
         if not self.training:
             shape = (*features.shape[:2], self.bits.item())
-            results = self.sample(shape, features, label_mask)
-            bit_seq, path_x = results
-            path_x = torch.stack([bits_to_decimal(r, self.bits.item()) for r in path_x], dim=1)
-            results = bits_to_decimal(bit_seq, self.bits.item())
-            # ensemble_res = torch.zeros_like(results, dtype=results.dtype)
-            # for i in range(batch_res.shape[0]):
-            #     for j in range(batch_res.shape[-1]):
-            #         temp = batch_res[i, :, j]
-            #         ensemble_res[i][j] = temp.bincount().argmax()
             
-            return results, path_x
-
-        if self.training:
-            # categorical data to bits [bsz, ]
-            # gold and noised sequence labels (now at word-level if LSTM is used)
-            bits_seq_labels = decimal_to_bits(word_seq_labels, self.bits)
-            bits_seq_labels *= self.scale
-            noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
-
-            self_cond = None
-            if random() < 0.5:
-                with torch.no_grad():
-                    self_cond = self.model_predictions(noise_bits_seq_labels, ts, features, label_mask).pred_x_start
-                    self_cond.detach_()
-
-            pred = self.model(noise_bits_seq_labels, ts, features, label_mask, self_cond)
-
-            targets = bits_seq_labels
-            targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
-            if self.objective == 'pred_noise':
-                targets = noise
-            if self.loss_type == 'l2':
-                loss = F.mse_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
-            elif self.loss_type == 'l1':
-                loss = F.l1_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
+            if use_mbr:
+                # Use Minimum Bayes Risk decoding
+                results, marginals = self.sample(
+                    shape, features, label_mask,
+                    use_mbr=True,
+                    num_samples=num_mbr_samples,
+                    temperature=mbr_temperature
+                )
+                return results, marginals
             else:
-                raise NotImplementedError
-            return loss
+                # Standard sampling
+                results, path_x = self.sample(shape, features, label_mask)
+                path_x = torch.stack([bits_to_decimal(r, self.bits.item()) for r in path_x], dim=1)
+                results = bits_to_decimal(results, self.bits.item())
+                
+                return results, path_x
+
+        # Training code
+        # categorical data to bits [bsz, ]
+        # gold and noised sequence labels (now at word-level if LSTM is used)
+        bits_seq_labels = decimal_to_bits(word_seq_labels, self.bits)
+        bits_seq_labels *= self.scale
+        noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
+
+        self_cond = None
+        if random() < 0.5:
+            with torch.no_grad():
+                self_cond = self.model_predictions(noise_bits_seq_labels, ts, features, label_mask).pred_x_start
+                self_cond.detach_()
+
+        pred = self.model(noise_bits_seq_labels, ts, features, label_mask, self_cond)
+
+        targets = bits_seq_labels
+        targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
+        if self.objective == 'pred_noise':
+            targets = noise
+        if self.loss_type == 'l2':
+            loss = F.mse_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
+        elif self.loss_type == 'l1':
+            loss = F.l1_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
+        else:
+            raise NotImplementedError
+        return loss
+
+    @torch.no_grad()
+    def ddim_sample_stochastic(self, shape, bert_features, attention_mask, temperature=1.0):
+        """
+        Stochastic DDIM sampling for generating diverse candidates
+        
+        Args:
+            shape: Shape of the output tensor
+            bert_features: BERT encoded features
+            attention_mask: Attention mask
+            temperature: Sampling temperature (higher = more diverse)
+        
+        Returns:
+            bit_seq: Sampled sequence
+        """
+        batch, device, total_timesteps, sampling_timesteps, objective = \
+            shape[0], self.betas.device, self.num_timesteps, self.sampling_timesteps, self.objective
+
+        # Use higher eta for stochasticity
+        eta = 0.5  # Add noise for diversity (vs 1.0 for deterministic)
+        
+        times = torch.linspace(-1, total_timesteps - 1, steps=sampling_timesteps + 1)
+        times = list(reversed(times.int().tolist()))
+        time_pairs = list(zip(times[:-1], times[1:]))
+
+        bit_seq = torch.randn(shape, device=device)
+        x_start = None
+
+        for time, time_next in time_pairs:
+            time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
+            self_cond = x_start if self.self_condition else None
+            pred_noise, x_start, *_ = self.model_predictions(
+                bit_seq, time_cond, bert_features, attention_mask, self_cond, clip_x_start=True
+            )
+            
+            # Apply temperature scaling to x_start
+            x_start = x_start / temperature
+            
+            if time_next < 0:
+                bit_seq = x_start
+                continue
+
+            alpha = self.alphas_cumprod[time]
+            alpha_next = self.alphas_cumprod[time_next]
+
+            sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+            c = (1 - alpha_next - sigma ** 2).sqrt()
+
+            # Add scaled noise for diversity
+            noise = torch.randn_like(bit_seq) * temperature
+
+            bit_seq = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+
+        return bit_seq
+
+    @torch.no_grad()
+    def mbr_sample(self, shape, bert_features, attention_mask, num_samples=5, temperature=0.8):
+        """
+        Minimum Bayes Risk (MBR) decoding for compound-level optimization
+        
+        Generates multiple candidate predictions and selects the one that maximizes
+        expected accuracy at the compound level (not just token level).
+        
+        Args:
+            shape: Shape of the output tensor [bsz, seq_len, bits]
+            bert_features: BERT encoded features [bsz, seq_len, hidden]
+            attention_mask: Attention mask [bsz, seq_len]
+            num_samples: Number of candidate samples to generate
+            temperature: Sampling temperature (0.5-1.0 recommended)
+        
+        Returns:
+            best_predictions: [bsz, seq_len] - Best label predictions
+            marginals: [bsz, seq_len, num_classes] - Marginal probabilities
+        """
+        batch_size, seq_len, bits = shape
+        device = bert_features.device
+        
+        # Generate multiple candidate samples
+        all_samples = []
+        all_labels = []
+        
+        print(f"Generating {num_samples} candidate samples for MBR decoding...")
+        for i in range(num_samples):
+            # Sample with stochasticity
+            bit_seq = self.ddim_sample_stochastic(shape, bert_features, attention_mask, temperature)
+            
+            # Convert bits to labels
+            # bit_seq: [bsz, seq_len, bits]
+            labels = bits_to_decimal(bit_seq / self.scale, self.bits)  # [bsz, seq_len]
+            
+            all_samples.append(bit_seq)
+            all_labels.append(labels)
+        
+        # Stack samples: [num_samples, bsz, seq_len]
+        all_labels = torch.stack(all_labels, dim=0)
+        
+        # Compute marginal probabilities
+        # For each position, compute the frequency of each label across samples
+        marginals = self._compute_marginals(all_labels, batch_size, seq_len)
+        
+        # Select best prediction using compound-level scoring
+        best_predictions = self._select_best_compound_labeling(
+            all_labels, marginals, attention_mask
+        )
+        
+        return best_predictions, marginals
+    
+    def _compute_marginals(self, all_labels, batch_size, seq_len):
+        """
+        Compute marginal probabilities for each label at each position
+        
+        Args:
+            all_labels: [num_samples, bsz, seq_len]
+            batch_size: int
+            seq_len: int
+        
+        Returns:
+            marginals: [bsz, seq_len, num_classes] - Probability distribution
+        """
+        num_samples = all_labels.shape[0]
+        num_classes = self.num_classes
+        device = all_labels.device
+        
+        # Initialize marginal counts
+        marginals = torch.zeros(batch_size, seq_len, num_classes, device=device)
+        
+        # Count occurrences of each label at each position
+        for sample_idx in range(num_samples):
+            labels = all_labels[sample_idx]  # [bsz, seq_len]
+            
+            # One-hot encode and accumulate
+            for b in range(batch_size):
+                for s in range(seq_len):
+                    label = labels[b, s].item()
+                    if 0 <= label < num_classes:
+                        marginals[b, s, label] += 1
+        
+        # Normalize to get probabilities
+        marginals = marginals / num_samples
+        
+        return marginals
+    
+    def _select_best_compound_labeling(self, all_labels, marginals, attention_mask):
+        """
+        Select the labeling that maximizes compound-level expected reward
+        
+        Strategy: Choose the sample that has the highest compound-level consistency
+        - Compute compound boundaries (sequences ending with Comp_root)
+        - For each sample, compute compound-level scores
+        - Select sample with best overall compound score
+        
+        Args:
+            all_labels: [num_samples, bsz, seq_len]
+            marginals: [bsz, seq_len, num_classes]
+            attention_mask: [bsz, seq_len]
+        
+        Returns:
+            best_predictions: [bsz, seq_len]
+        """
+        num_samples, batch_size, seq_len = all_labels.shape
+        device = all_labels.device
+        
+        # Compute score for each sample
+        sample_scores = torch.zeros(num_samples, batch_size, device=device)
+        
+        for sample_idx in range(num_samples):
+            labels = all_labels[sample_idx]  # [bsz, seq_len]
+            
+            # Compute compound-level score for this sample
+            for b in range(batch_size):
+                mask = attention_mask[b].bool()
+                seq_labels = labels[b][mask]  # [valid_len]
+                seq_marginals = marginals[b][mask]  # [valid_len, num_classes]
+                
+                # Score: sum of log probabilities for this labeling
+                # Weighted by compound boundaries
+                score = 0.0
+                compound_start = 0
+                
+                for pos in range(len(seq_labels)):
+                    label = seq_labels[pos].item()
+                    if 0 <= label < self.num_classes:
+                        # Token-level score: log marginal probability
+                        token_score = torch.log(seq_marginals[pos, label] + 1e-10)
+                        
+                        # Compound-level bonus: check if we're at Comp_root
+                        # This encourages consistent compound labelings
+                        if self._is_compound_root(label):
+                            # Give bonus for compound consistency
+                            compound_len = pos - compound_start + 1
+                            compound_labels = seq_labels[compound_start:pos+1]
+                            compound_marginals = seq_marginals[compound_start:pos+1]
+                            
+                            # Compute compound coherence score
+                            compound_score = self._score_compound(
+                                compound_labels, compound_marginals
+                            )
+                            score += compound_score * compound_len  # Weight by length
+                            
+                            compound_start = pos + 1
+                        else:
+                            score += token_score
+                
+                sample_scores[sample_idx, b] = score
+        
+        # Select best sample for each batch element
+        best_sample_indices = sample_scores.argmax(dim=0)  # [bsz]
+        
+        # Gather best predictions
+        best_predictions = torch.zeros(batch_size, seq_len, dtype=torch.long, device=device)
+        for b in range(batch_size):
+            best_idx = best_sample_indices[b]
+            best_predictions[b] = all_labels[best_idx, b]
+        
+        return best_predictions
+    
+    def _is_compound_root(self, label_id):
+        """Check if a label ID corresponds to Comp_root"""
+        # This assumes label_set has a method to check for Comp_root
+        # You may need to adjust based on your label set structure
+        # For now, we'll use a heuristic: check if the label name contains "Comp_root"
+        try:
+            label_name = self.label_set.idx2label.get(label_id, "")
+            return "Comp_root" in label_name
+        except:
+            # Fallback: assume label_id == num_classes - 1 is Comp_root
+            return False
+    
+    def _score_compound(self, compound_labels, compound_marginals):
+        """
+        Score a compound based on consistency of its labels
+        
+        Args:
+            compound_labels: [compound_len] - Labels in this compound
+            compound_marginals: [compound_len, num_classes] - Marginal probs
+        
+        Returns:
+            score: float - Compound consistency score
+        """
+        score = 0.0
+        compound_len = len(compound_labels)
+        
+        if compound_len == 0:
+            return 0.0
+        
+        # Sum log probabilities of chosen labels
+        for i, label in enumerate(compound_labels):
+            label = label.item() if torch.is_tensor(label) else label
+            if 0 <= label < self.num_classes:
+                prob = compound_marginals[i, label].item()
+                score += torch.log(torch.tensor(prob + 1e-10)).item()
+        
+        # Normalize by length (geometric mean)
+        score = score / compound_len
+        
+        return score
+
+    @torch.no_grad()
+    def sample(self, shape, bert_features, attention_mask, use_mbr=False, num_samples=5, temperature=0.8):
+        """
+        Main sampling method with optional MBR decoding
+        
+        Args:
+            shape: Output shape
+            bert_features: BERT features
+            attention_mask: Attention mask
+            use_mbr: Whether to use MBR decoding
+            num_samples: Number of samples for MBR
+            temperature: Temperature for stochastic sampling
+        
+        Returns:
+            If use_mbr: (best_predictions, marginals)
+            Else: sampled bit sequence
+        """
+        if use_mbr:
+            return self.mbr_sample(shape, bert_features, attention_mask, num_samples, temperature)
+        else:
+            sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
+            return sample_fn(shape, bert_features, attention_mask)
 
     def prepare_targets(self, gold_seq_labels):
         """

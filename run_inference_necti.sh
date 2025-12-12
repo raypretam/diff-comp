@@ -57,7 +57,7 @@ python inference_necti.py \
     --batch_size 16 \
     --device cuda \
     --save_predictions \
-    --output_dir "$OUTPUT_DIR"
+    --output_dir "$OUTPUT_DIR" \
 
 echo ""
 echo "=================================================="

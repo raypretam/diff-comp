@@ -14,6 +14,7 @@ from tqdm import tqdm
 from typing import Dict, List
 import numpy as np
 import json
+import time
 
 
 class NeCTIInference:
@@ -109,7 +110,8 @@ class NeCTIInference:
         return dataloader
     
     @torch.no_grad()
-    def evaluate(self, dataloader, split_name="test", save_predictions=False):
+    def evaluate(self, dataloader, split_name="test", save_predictions=False, 
+                use_mbr=False, num_mbr_samples=5, mbr_temperature=0.8, mbr_metric='uss'):
         """
         Evaluate model on given dataloader
         
@@ -117,32 +119,59 @@ class NeCTIInference:
             dataloader: DataLoader for evaluation
             split_name: Name of the split (for logging)
             save_predictions: Whether to save predictions to file
+            use_mbr: Whether to use MBR decoding
+            num_mbr_samples: Number of samples for MBR
+            mbr_temperature: Temperature for MBR sampling
+            mbr_metric: Metric for MBR ('uss', 'lss', or 'voting')
         
         Returns:
             Dictionary with metrics and predictions
         """
         print(f"\n{'='*50}")
         print(f"Evaluating on {split_name} set...")
+        if use_mbr:
+            print(f"Using MBR decoding: num_samples={num_mbr_samples}, temperature={mbr_temperature}, metric={mbr_metric}")
         print(f"{'='*50}\n")
         
         self.model.eval()
         
         all_predictions = []
         all_labels = []
-        all_compounds = []
         detailed_predictions = []
         all_pred_relations = []
         all_true_relations = []
+        
+        # Reset timing counters at start of evaluation
+        if use_mbr:
+            self._mbr_timing_counter = 0
+            self._selection_timings = {
+                'conversion': [],
+                'scoring': [],
+                'total': []
+            }
         
         for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Evaluating {split_name}")):
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             seq_labels = batch['seq_labels'].to(self.device)
-            compounds = batch['compounds']
-            word_ids = batch['word_ids']
+            words2pieces = batch.get('words2pieces', None)
+            if words2pieces is not None:
+                words2pieces = words2pieces.to(self.device)
             
-            # Get predictions
-            predictions, _ = self.model(input_ids, attention_mask, seq_labels)
+            # Generate predictions with MBR if enabled
+            if use_mbr:
+                predictions = self._mbr_decode(
+                    input_ids, attention_mask, seq_labels, words2pieces,
+                    num_samples=num_mbr_samples,
+                    temperature=mbr_temperature,
+                    metric=mbr_metric
+                )
+            else:
+                # Standard inference
+                if self.model.add_lstm:
+                    predictions, _ = self.model(input_ids, attention_mask, seq_labels, words2pieces)
+                else:
+                    predictions, _ = self.model(input_ids, attention_mask, seq_labels)
             
             # Process batch
             batch_size = input_ids.size(0)
@@ -157,7 +186,6 @@ class NeCTIInference:
                 all_labels.extend(label_seq.tolist())
                 
                 # Convert to relations format for USS/LSS calculation
-                word_id_list = [wid for wid in word_ids[i] if wid is not None]
                 pred_labels_decoded = [self.label_set.id2label(p) for p in pred_seq]
                 true_labels_decoded = [self.label_set.id2label(l) for l in label_seq]
                 
@@ -165,26 +193,20 @@ class NeCTIInference:
                 pred_relations = []
                 true_relations = []
                 for j, (pred_label, true_label) in enumerate(zip(pred_labels_decoded, true_labels_decoded)):
-                    if j < len(word_id_list):
-                        token_idx = word_id_list[j] + 1  # 1-indexed
-                        # For USS/LSS, we need (token_idx, head_idx, relation)
-                        # Since we don't have head info from predictions, use token_idx as placeholder
-                        pred_relations.append([token_idx, 0, pred_label])
-                        true_relations.append([token_idx, 0, true_label])
+                    token_idx = j + 1  # 1-indexed
+                    pred_relations.append([token_idx, 0, pred_label])
+                    true_relations.append([token_idx, 0, true_label])
                 
                 all_pred_relations.append(pred_relations)
                 all_true_relations.append(true_relations)
                 
                 # Store detailed predictions if requested
                 if save_predictions:
-                    sample_compounds = compounds[i] if i < len(compounds) else []
-                    
                     detailed_predictions.append({
                         'batch_idx': batch_idx,
                         'sample_idx': i,
                         'predictions': pred_labels_decoded,
                         'true_labels': true_labels_decoded,
-                        'compounds': sample_compounds
                     })
         
         # Calculate metrics
@@ -207,6 +229,33 @@ class NeCTIInference:
         # Add detailed predictions to results
         if save_predictions:
             results['detailed_predictions'] = detailed_predictions
+        
+        # Add MBR config if used
+        if use_mbr:
+            results['used_mbr'] = True
+            results['mbr_config'] = {
+                'num_samples': num_mbr_samples,
+                'temperature': mbr_temperature,
+                'metric': mbr_metric
+            }
+        
+        # Print final MBR timing summary
+        if use_mbr and hasattr(self, '_selection_timings'):
+            print(f"\n{'='*50}")
+            print("MBR TIMING SUMMARY")
+            print(f"{'='*50}")
+            avg_conversion = np.mean(self._selection_timings['conversion'])
+            avg_scoring = np.mean(self._selection_timings['scoring'])
+            avg_total = np.mean(self._selection_timings['total'])
+            total_selection_time = sum(self._selection_timings['total'])
+            print(f"Per-instance averages:")
+            print(f"  Conversion to relations: {avg_conversion:.4f}s ({avg_conversion/avg_total*100:.1f}%)")
+            print(f"  Pairwise scoring:        {avg_scoring:.4f}s ({avg_scoring/avg_total*100:.1f}%)")
+            print(f"  Total selection:         {avg_total:.4f}s")
+            print(f"Total selection time:      {total_selection_time:.2f}s")
+            print(f"Number of samples:         {num_mbr_samples}")
+            print(f"Pairwise comparisons/inst: {num_mbr_samples * (num_mbr_samples - 1)}")
+            print(f"{'='*50}\n")
         
         return results
     
@@ -340,7 +389,8 @@ class NeCTIInference:
                 lst.append(rel)
         return nested_comp
     
-    def run_inference(self, splits=['test'], batch_size=8, save_predictions=False, output_dir=None):
+    def run_inference(self, splits=['test'], batch_size=8, save_predictions=False, output_dir=None,
+                  use_mbr=False, num_mbr_samples=5, mbr_temperature=0.8, mbr_metric='uss'):
         """
         Run inference on specified splits
         
@@ -349,6 +399,10 @@ class NeCTIInference:
             batch_size: Batch size for inference
             save_predictions: Whether to save predictions to file
             output_dir: Directory to save predictions (if save_predictions=True)
+            use_mbr: Whether to use MBR decoding
+            num_mbr_samples: Number of samples for MBR
+            mbr_temperature: Temperature for MBR sampling
+            mbr_metric: Metric for MBR selection ('uss', 'lss', or 'voting')
         
         Returns:
             Dictionary mapping split names to results
@@ -358,7 +412,13 @@ class NeCTIInference:
         for split in splits:
             try:
                 dataloader = self._get_dataloader(split, batch_size)
-                split_results = self.evaluate(dataloader, split, save_predictions)
+                split_results = self.evaluate(
+                    dataloader, split, save_predictions,
+                    use_mbr=use_mbr,
+                    num_mbr_samples=num_mbr_samples,
+                    mbr_temperature=mbr_temperature,
+                    mbr_metric=mbr_metric
+                )
                 results[split] = split_results
                 
                 # Save predictions if requested
@@ -385,6 +445,185 @@ class NeCTIInference:
                 continue
         
         return results
+    
+    def _mbr_decode(self, input_ids, attention_mask, seq_labels, words2pieces,
+                    num_samples=5, temperature=1.0, metric='uss', max_parallel_samples=10):
+        """
+        Minimum Bayes Risk decoding with structure-aware scoring (parallelized with chunking)
+        """
+        start_time = time.time()
+        
+        batch_size = input_ids.size(0)
+        seq_len = seq_labels.size(1)
+        
+        # If num_samples is too large, chunk it
+        generation_start = time.time()
+        if num_samples > max_parallel_samples:
+            chunks = [max_parallel_samples] * (num_samples // max_parallel_samples)
+            if num_samples % max_parallel_samples:
+                chunks.append(num_samples % max_parallel_samples)
+            
+            all_samples_list = []
+            for chunk_size in chunks:
+                chunk_samples = self._generate_parallel_samples(
+                    input_ids, attention_mask, seq_labels, words2pieces, chunk_size
+                )
+                all_samples_list.append(chunk_samples)
+            
+            # Concatenate along sample dimension: [batch_size, num_samples, seq_len]
+            all_samples = torch.cat(all_samples_list, dim=1)
+        else:
+            all_samples = self._generate_parallel_samples(
+                input_ids, attention_mask, seq_labels, words2pieces, num_samples
+            )
+        
+        generation_time = time.time() - generation_start
+        
+        # Select best sample for each instance
+        selection_start = time.time()
+        best_predictions = []
+        for b in range(batch_size):
+            valid_mask = (seq_labels[b] != -100)
+            instance_samples = [all_samples[b, s, valid_mask].cpu().numpy() 
+                              for s in range(num_samples)]
+            
+            if metric == 'voting':
+                best_pred = self._voting_decode(instance_samples)
+            else:
+                best_pred = self._select_mbr_sample(instance_samples, metric)
+            
+            full_pred = seq_labels[b].clone()
+            full_pred[valid_mask] = torch.tensor(best_pred, device=seq_labels.device)
+            best_predictions.append(full_pred)
+        
+        selection_time = time.time() - selection_start
+        total_time = time.time() - start_time
+        
+        # Print timing info (can be removed or made optional later)
+        if hasattr(self, '_mbr_timing_counter'):
+            self._mbr_timing_counter += 1
+        else:
+            self._mbr_timing_counter = 1
+        
+        # Print every 10 batches to avoid spam
+        if self._mbr_timing_counter % 10 == 0:
+            print(f"\n[MBR Timing] Batch {self._mbr_timing_counter}:")
+            print(f"  Generation: {generation_time:.3f}s ({generation_time/total_time*100:.1f}%)")
+            print(f"  Selection:  {selection_time:.3f}s ({selection_time/total_time*100:.1f}%)")
+            print(f"  Total:      {total_time:.3f}s")
+        
+        return torch.stack(best_predictions)
+    
+    def _generate_parallel_samples(self, input_ids, attention_mask, seq_labels, 
+                                   words2pieces, num_samples):
+        """Helper to generate samples in parallel"""
+        batch_size = input_ids.size(0)
+        seq_len = seq_labels.size(1)
+        
+        # Expand inputs
+        expanded_input_ids = input_ids.repeat_interleave(num_samples, dim=0)
+        expanded_attention_mask = attention_mask.repeat_interleave(num_samples, dim=0)
+        expanded_seq_labels = seq_labels.repeat_interleave(num_samples, dim=0)
+        
+        if words2pieces is not None:
+            expanded_words2pieces = words2pieces.repeat_interleave(num_samples, dim=0)
+        else:
+            expanded_words2pieces = None
+        
+        with torch.no_grad():
+            if self.model.add_lstm:
+                all_preds, _ = self.model(expanded_input_ids, expanded_attention_mask,
+                                         expanded_seq_labels, expanded_words2pieces)
+            else:
+                all_preds, _ = self.model(expanded_input_ids, expanded_attention_mask,
+                                         expanded_seq_labels)
+        
+        return all_preds.view(batch_size, num_samples, seq_len)
+
+    def _voting_decode(self, samples):
+        """Majority voting across samples"""
+        samples_array = np.array(samples)  # [num_samples, seq_len]
+        # Get mode (most frequent) for each position
+        from scipy import stats
+        voted, _ = stats.mode(samples_array, axis=0, keepdims=False)
+        return voted
+    
+    def _select_mbr_sample(self, samples, metric='uss'):
+        """
+        Select sample with minimum Bayes risk based on structure
+        
+        Args:
+            samples: List of predicted sequences [num_samples, seq_len]
+            metric: 'uss' for unlabeled span score, 'lss' for labeled span score
+        
+        Returns:
+            Best sample (numpy array)
+        """
+        start_time = time.time()
+        num_samples = len(samples)
+        
+        # Convert samples to relations format
+        conversion_start = time.time()
+        all_relations = []
+        for sample in samples:
+            relations = []
+            for j, label_id in enumerate(sample):
+                label_str = self.label_set.id2label(int(label_id))
+                relations.append([j + 1, 0, label_str])
+            all_relations.append(relations)
+        conversion_time = time.time() - conversion_start
+        
+        # Calculate pairwise scores
+        scoring_start = time.time()
+        risk_scores = np.zeros(num_samples)
+        
+        for i in range(num_samples):
+            total_score = 0.0
+            for j in range(num_samples):
+                if i == j:
+                    continue
+                
+                # Calculate agreement score
+                if metric == 'uss':
+                    score = self._calculate_uss([all_relations[i]], [all_relations[j]])
+                else:  # lss
+                    score = self._calculate_lss([all_relations[i]], [all_relations[j]])['f1']
+                
+                # Risk is inverse of agreement (we want high agreement)
+                total_score += (1.0 - score)
+            
+            risk_scores[i] = total_score / (num_samples - 1)
+        
+        scoring_time = time.time() - scoring_start
+        
+        # Select sample with minimum risk
+        best_idx = np.argmin(risk_scores)
+        
+        total_time = time.time() - start_time
+        
+        # Store timing info for reporting
+        if not hasattr(self, '_selection_timings'):
+            self._selection_timings = {
+                'conversion': [],
+                'scoring': [],
+                'total': []
+            }
+        
+        self._selection_timings['conversion'].append(conversion_time)
+        self._selection_timings['scoring'].append(scoring_time)
+        self._selection_timings['total'].append(total_time)
+        
+        # Print aggregate timing every 50 samples
+        if len(self._selection_timings['total']) % 50 == 0:
+            avg_conversion = np.mean(self._selection_timings['conversion'][-50:])
+            avg_scoring = np.mean(self._selection_timings['scoring'][-50:])
+            avg_total = np.mean(self._selection_timings['total'][-50:])
+            print(f"\n[MBR Selection Timing - Last 50 samples]:")
+            print(f"  Avg Conversion: {avg_conversion:.4f}s ({avg_conversion/avg_total*100:.1f}%)")
+            print(f"  Avg Scoring:    {avg_scoring:.4f}s ({avg_scoring/avg_total*100:.1f}%)")
+            print(f"  Avg Total:      {avg_total:.4f}s")
+        
+        return samples[best_idx]
 
 
 def main():
@@ -412,7 +651,16 @@ def main():
                         help='Save predictions to file')
     parser.add_argument('--output_dir', type=str, default='./inference_results',
                         help='Directory to save predictions')
-    
+    parser.add_argument('--use_mbr', action='store_true',
+                        help='Use MBR decoding during inference')
+    parser.add_argument('--num_mbr_samples', type=int, default=5,
+                        help='Number of samples for MBR decoding')
+    parser.add_argument('--mbr_temperature', type=float, default=0.8,
+                        help='Temperature for MBR decoding')
+    parser.add_argument('--mbr_metric', type=str, default='uss',
+                        choices=['uss', 'lss', 'voting'],
+                        help='Metric for MBR selection (uss=unlabeled span, lss=labeled span, voting=majority vote)')
+
     args = parser.parse_args()
     
     # Initialize inference
@@ -424,12 +672,16 @@ def main():
         device=args.device
     )
     
-    # Run inference
+    # Run inference with MBR support
     results = inference.run_inference(
         splits=args.splits,
         batch_size=args.batch_size,
         save_predictions=args.save_predictions,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        use_mbr=args.use_mbr,
+        num_mbr_samples=args.num_mbr_samples,
+        mbr_temperature=args.mbr_temperature,
+        mbr_metric=args.mbr_metric
     )
     
     # Print summary
