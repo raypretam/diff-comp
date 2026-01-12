@@ -4,24 +4,24 @@
 # Model Configuration
 base: 'ner'
 dataset: 'necti_coarse'
-num_classes: 6  # Will be adjusted automatically based on data
+num_classes: 7  # Will be adjusted automatically based on data
 backbone: 'xlm-roberta-base'  # XLM-R encoder
-time_steps: 1000
-sampling_steps: 10
+time_steps: 200
+sampling_steps: 50 
 ddim_sampling_eta: 1.0
 self_condition: True
-snr_scale: 2.0
-dim_model: 768  # XLM-R hidden size
-dim_time: 256
-depth: 6
-objective: 'pred_x0'
-noise_schedule: 'linear'
+snr_scale: 2.5  # Increased for better signal-to-noise ratio
+dim_model: 1024  # XLM-R hidden size
+dim_time: 512  # Increased from 256 for richer temporal embeddings
+depth: 12  # Doubled from 6 for deeper architecture
+objective: 'pred_noise'
+noise_schedule: 'cosine'  # Changed from linear to cosine
 loss_type: 'l2'
-add_lstm: True
+add_lstm: False  # Set to True to enable LSTM for word-level features (requires words2pieces)
 freeze_bert: False
 max_length: 256
 network_architecture: 'transformer'
-ensemble: False
+ensemble: False  
 
 # Data Configuration
 data_path: '/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data'
@@ -30,19 +30,19 @@ granularity: 'Coarse'
 # Training Configuration
 logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
 output_dir: 'saved_models/necti_coarse'
-batch_size: 16
-num_workers: 4
-max_epochs: 20
-max_steps: 250000
-warmup_steps: 1000
+batch_size: 8  # Reduced due to larger model
+num_workers: 8
+max_epochs: 30
+max_steps: 25000  # Doubled for more training
+warmup_steps: 1000  # Increased warmup
 warmup_ratio: 0.01
-optimizer_type: 'adam'
-lr_scheduler_type: 'linear'
-lr_bert: 2e-5  # Lower learning rate for pretrained XLM-R
-lr_other: 5e-4  # Higher learning rate for diffusion components
+optimizer_type: 'adamW'
+lr_scheduler_type: 'cosine'  # Changed to cosine for better convergence
+lr_bert: 5e-6  # Lower learning rate for stability
+lr_other: 3e-4  # Reduced slightly
 weight_decay: 0.01
 max_grad_norm: 1.0
-accumulation_steps: 1
+accumulation_steps: 2
 
 # GPU Configuration
 use_gpu: True

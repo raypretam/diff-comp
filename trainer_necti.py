@@ -1,6 +1,6 @@
 """
 Training script for nested compound identification using DiffusionSL
-Adapted for DepNeCTI data with XLM-R encoder
+Adapted for DepNeCTI data with XLM-R encoder — UPDATED FOR BIT_DIM SUPPORT
 """
 
 import os
@@ -20,30 +20,38 @@ import numpy as np
 
 
 class NeCTITrainer:
-    """Trainer for nested compound identification"""
+    """Trainer for nested compound identification (UPDATED FOR BIT_DIM)"""
     
     def __init__(self, args: Namespace):
         self.args = args
         self._print_hyperparameters()
-        
-        # Set default value for use_context if not present
+
+        # Ensure bit_dim exists (new argument)
+        if not hasattr(self.args, "bit_dim"):
+            self.args.bit_dim = 16
+
+        # CONTEXT
         if not hasattr(self.args, 'use_context'):
             self.args.use_context = False
         
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
         
+        # wandb
         if self.args.logger == 'wandb':
-            run_name = f"necti-{args.granularity}-{context_mode}--lr_bert_{args.lr_bert}--lr_other_{args.lr_other}--epochs_{args.max_epochs}"
+            run_name = (
+                f"necti-{args.granularity}-{context_mode}"
+                f"--bitdim_{args.bit_dim}"
+                f"--lr_bert_{args.lr_bert}--lr_other_{args.lr_other}"
+                f"--epochs_{args.max_epochs}"
+            )
             wandb.init(project="DiffusionSL-NeCTI", name=run_name)
             wandb.config.update(self.args)
             wandb.define_metric("f1", summary="max")
         
         self.device = self._configure_device()
         
-        # DepNeCTI data path
-        self.dataset_path = self.args.data_path
-        
         # Load label set
+        self.dataset_path = self.args.data_path
         self.label_set = NeCTILabelSet(
             data_path=self.dataset_path,
             granularity=self.args.granularity,
@@ -51,10 +59,11 @@ class NeCTITrainer:
         )
         
         if self.args.num_classes != len(self.label_set):
-            print(f"Number of classes ({self.args.num_classes}) adjusted to {len(self.label_set)} based on dataset")
+            print(f"Adjusting num_classes to: {len(self.label_set)}")
             self.args.num_classes = len(self.label_set)
         
-        # Initialize model with XLM-R backbone
+
+        # *** BITDIT v2 INITIALIZATION ***
         self.model = BitDit(
             device=self.device,
             num_classes=self.args.num_classes,
@@ -74,26 +83,30 @@ class NeCTITrainer:
             freeze_bert=self.args.freeze_bert,
             max_length=self.args.max_length,
             depth=self.args.depth,
-            num_labels=len(self.label_set)
+            num_labels=len(self.label_set),
+            bit_dim=self.args.bit_dim
         )
-        
+
         if self.args.logger == "wandb":
             wandb.watch(self.model, log_freq=1000)
         
-        # Initialize tokenizer for XLM-R
+        # Tokenizer + collator
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
-        self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length, add_lstm=self.args.add_lstm)
+        self.collate_fn = NeCTICollator(
+            self.tokenizer,
+            max_length=self.args.max_length,
+            add_lstm=self.args.add_lstm
+        )
         
-        # Create data loaders
+        # Dataloaders
         self.train_dataloader = self._get_dataloader('train', self.args.batch_size)
         self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size)
         self.test_dataloader = self._get_dataloader('test', self.args.batch_size)
-        
-        # Try to load OOD data if available
+
         try:
             self.ood_dataloader = self._get_dataloader('ood', self.args.batch_size)
-        except FileNotFoundError:
-            print("OOD dataset not found, skipping...")
+        except:
+            print("No OOD dataset found")
             self.ood_dataloader = None
         
         self.steps = self.args.max_steps
@@ -171,11 +184,8 @@ class NeCTITrainer:
         return optimizer, lr_scheduler
     
     def train(self):
-        """Main training loop"""
         self._print_num_parameters()
-        print("\n" + "=" * 50)
-        print("Starting training...")
-        print("=" * 50 + "\n")
+        print("\n======== Starting Training ========\n")
         
         best_f1 = 0.0
         global_step = 0
@@ -183,36 +193,40 @@ class NeCTITrainer:
         for epoch in range(1, self.args.max_epochs + 1):
             print(f"\nEpoch {epoch}/{self.args.max_epochs}")
             print("-" * 50)
-            
-            # Training
+
+            # ---------------------- TRAIN ----------------------
             self.model.train()
             train_loss = 0.0
             train_steps = 0
             
-            pbar = tqdm(self.train_dataloader, desc="Training")
-            for batch in pbar:
+            for batch in tqdm(self.train_dataloader, desc="Training"):
+                
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 seq_labels = batch['seq_labels'].to(self.device)
-                words2pieces = batch.get('words2pieces', None)  # Get words2pieces if present
+
+                words2pieces = batch.get('words2pieces')
                 if words2pieces is not None:
                     words2pieces = words2pieces.to(self.device)
-                
-                # Forward pass with optional words2pieces
-                loss = self.model(input_ids, attention_mask, seq_labels, words2pieces)
-                
+
+                # BitDit v2 returns LOSS directly
+                loss = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    seq_labels=seq_labels,
+                    words2pieces=words2pieces
+                )
+
                 self.optimizer.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
                 self.optimizer.step()
                 self.lr_scheduler.step()
-                
+
                 train_loss += loss.item()
                 train_steps += 1
                 global_step += 1
-                
-                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-                
+
                 if self.args.logger == 'wandb':
                     wandb.log({
                         'train/loss': loss.item(),
@@ -221,17 +235,12 @@ class NeCTITrainer:
                         'global_step': global_step
                     })
             
-            avg_train_loss = train_loss / train_steps
-            print(f"Average training loss: {avg_train_loss:.4f}")
+            print(f"Avg Training Loss: {train_loss / train_steps:.4f}")
             
-            # Evaluation on dev set
-            print("\nEvaluating on dev set...")
+            # ---------------------- DEV EVAL ----------------------
             dev_results = self.evaluate(self.dev_dataloader, "dev")
-            
-            print(f"Dev F1: {dev_results['f1']:.4f}")
-            print(f"Dev Precision: {dev_results['precision']:.4f}")
-            print(f"Dev Recall: {dev_results['recall']:.4f}")
-            
+            print(f"DEV F1 = {dev_results['f1']:.4f}")
+
             if self.args.logger == 'wandb':
                 wandb.log({
                     'dev/f1': dev_results['f1'],
@@ -240,31 +249,22 @@ class NeCTITrainer:
                     'epoch': epoch
                 })
             
-            # Save best model
+            # save best
             if dev_results['f1'] > best_f1:
                 best_f1 = dev_results['f1']
-                self._save_model(epoch, dev_results['f1'])
-                print(f"New best F1: {best_f1:.4f} - Model saved!")
-        
-        # Final evaluation on test set
-        
-        print("\n" + "=" * 50)
-        print("Training completed! Evaluating on test set...")
-        print("=" * 50 + "\n")
-        
-        # Load best model
+                self._save_model(epoch, best_f1)
+                print("New BEST model saved!")
+
+        # ---------------------- FINAL TEST ----------------------
+        print("\n======== FINAL TEST ========\n")
         self._load_best_model()
-        
+
         test_results = self.evaluate(self.test_dataloader, "test")
-        print(f"\nTest Results:")
-        print(f"F1: {test_results['f1']:.4f}")
-        print(f"Precision: {test_results['precision']:.4f}")
-        print(f"Recall: {test_results['recall']:.4f}")
-        
-        if self.ood_dataloader is not None:
-            print("\nEvaluating on OOD set...")
+        print("Test F1 =", test_results['f1'])
+
+        if self.ood_dataloader:
             ood_results = self.evaluate(self.ood_dataloader, "ood")
-            print(f"OOD F1: {ood_results['f1']:.4f}")
+            print("OOD F1 =", ood_results['f1'])
         
         if self.args.logger == 'wandb':
             wandb.log({
@@ -275,66 +275,56 @@ class NeCTITrainer:
     
     @torch.no_grad()
     def evaluate(self, dataloader, split_name="dev"):
-        """Evaluate model on given dataloader"""
+
         self.model.eval()
-        
-        all_predictions = []
+
+        all_preds = []
         all_labels = []
-        all_compounds = []
-        
+
+        # majority voting enabled only for test/ood
+        use_voting = split_name in ["test", "ood"]
+        votes = 5 if use_voting else 1
+
         for batch in tqdm(dataloader, desc=f"Evaluating {split_name}"):
+
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             seq_labels = batch['seq_labels'].to(self.device)
-            words2pieces = batch.get('words2pieces', None)
+
+            words2pieces = batch.get("words2pieces")
             if words2pieces is not None:
                 words2pieces = words2pieces.to(self.device)
-            
-            compounds = batch['compounds']
-            
-            with torch.no_grad():
-                # Forward pass with optional words2pieces
-                predictions, path_x = self.model(input_ids, attention_mask, seq_labels, words2pieces)
-            
-            # When LSTM is used, we need to convert seq_labels to word-level to match predictions
-            if self.args.add_lstm and words2pieces is not None:
-                # Convert piece-level labels to word-level
-                bsz, num_words, max_pieces = words2pieces.shape
-                word_seq_labels = torch.full((bsz, num_words), -100, dtype=seq_labels.dtype, device=seq_labels.device)
-                
-                valid_pieces_mask = words2pieces.gt(0)
-                for b in range(bsz):
-                    for w in range(num_words):
-                        valid_indices = words2pieces[b, w][valid_pieces_mask[b, w]]
-                        if len(valid_indices) > 0:
-                            seq_len = seq_labels.shape[1]
-                            valid_indices = valid_indices.clamp(0, seq_len - 1)
-                            # Get label for first valid piece of this word
-                            first_piece_label = seq_labels[b, valid_indices[0]]
-                            word_seq_labels[b, w] = first_piece_label
-                
-                # Use word-level labels for evaluation
-                eval_labels = word_seq_labels
+
+            # get BERT features once (optimization)
+            bert_features = self.model.backbone(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            ).last_hidden_state
+
+            shape = (input_ids.size(0), input_ids.size(1))
+
+            # BITDIT v2 SAMPLING
+            if use_voting:
+                # majority voting
+                vote_pool = []
+                for _ in range(votes):
+                    preds, _ = self.model.sample(shape, bert_features, attention_mask)
+                    vote_pool.append(preds.unsqueeze(0))  # [1, bsz, seq]
+                vote_pool = torch.cat(vote_pool, dim=0)     # [votes, bsz, seq]
+                preds = vote_pool.mode(dim=0).values        # majority vote
             else:
-                eval_labels = seq_labels
-            
-            # Collect predictions and labels (excluding padding)
-            mask = (eval_labels != -100)
-            
-            batch_preds = predictions[mask].cpu().numpy()
-            batch_labels = eval_labels[mask].cpu().numpy()
-            
-            all_predictions.extend(batch_preds.tolist())
-            all_labels.extend(batch_labels.tolist())
-            all_compounds.extend(compounds)
-        
-        # Calculate metrics
-        results = self._calculate_metrics(all_predictions, all_labels)
-        
-        return results
+                # single pass
+                preds, _ = self.model.sample(shape, bert_features, attention_mask)
+
+            # MASKING & METRICS
+            mask = seq_labels != -100
+            all_preds.extend(preds[mask].cpu().tolist())
+            all_labels.extend(seq_labels[mask].cpu().tolist())
+
+        return self._calculate_metrics(all_preds, all_labels)
     
     def _calculate_metrics(self, predictions: List[int], labels: List[int]) -> Dict[str, float]:
-        """Calculate precision, recall, and F1 score"""
+        """Calculate precision, recall, and F1 score for compound identification"""
         predictions = np.array(predictions)
         labels = np.array(labels)
         
