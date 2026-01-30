@@ -28,6 +28,7 @@ class NeCTILabelSet:
         self.use_context = use_context
         context_dir = 'With Context' if use_context else 'Without Context'
         self.data_path = os.path.join(data_path, context_dir, granularity)
+        print(f"Initializing NeCTILabelSet with data path: {self.data_path}")
         
         # Read all splits to collect labels
         self._labelset = set()
@@ -59,8 +60,8 @@ class NeCTILabelSet:
                 line = line.strip()
                 if line and not line.startswith('#'):
                     parts = line.split('\t')
-                    if len(parts) >= 6:
-                        relation = parts[5]  # Sixth column is the relation/compound type
+                    if len(parts) >= 8:
+                        relation = parts[7]  # Eighth column is the relation/compound type
                         labels.add(relation)
         return labels
     
@@ -128,12 +129,12 @@ class NeCTIDataset(Dataset):
                         current_data = []
                 elif not line.startswith('#'):
                     parts = line.split('\t')
-                    if len(parts) >= 6:
+                    if len(parts) >= 8:
                         idx = int(parts[0])
-                        token = parts[1]
-                        comp_label = parts[2]  # Comp2, Comp3, CompNo, etc.
-                        head_idx = int(parts[4])
-                        relation = parts[5]  # Compound type or No_rel/Comp_root
+                        token = parts[1].split('_')[0]  # Strip compound span length suffix after underscore
+                        comp_label = parts[3]  # Comp2, Comp3, CompNo, etc.
+                        head_idx = int(parts[6])
+                        relation = parts[7]  # Compound type or No_rel/Comp_root
                         
                         current_data.append({
                             'idx': idx,

@@ -5,16 +5,17 @@
 base: 'ner'
 dataset: 'necti_coarse'
 num_classes: 7  # Will be adjusted automatically based on data
-backbone: 'xlm-roberta-base'  # XLM-R encoder
-time_steps: 200
-sampling_steps: 50 
-ddim_sampling_eta: 1.0
+backbone: 'xlm-roberta-large'  # XLM-R encoder
+time_steps: 1000
+sampling_steps: 10
+ddim_sampling_eta: 0.2
 self_condition: True
-snr_scale: 2.5  # Increased for better signal-to-noise ratio
+snr_scale: 0.1  # Increased for better signal-to-noise ratio
 dim_model: 1024  # XLM-R hidden size
 dim_time: 512  # Increased from 256 for richer temporal embeddings
-depth: 12  # Doubled from 6 for deeper architecture
-objective: 'pred_noise'
+depth: 6  # Doubled from 6 for deeper architecture
+# bit_dim: 16
+objective: 'pred_x0'
 noise_schedule: 'cosine'  # Changed from linear to cosine
 loss_type: 'l2'
 add_lstm: False  # Set to True to enable LSTM for word-level features (requires words2pieces)
@@ -30,11 +31,11 @@ granularity: 'Coarse'
 # Training Configuration
 logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
 output_dir: 'saved_models/necti_coarse'
-batch_size: 8  # Reduced due to larger model
+batch_size: 1  # Reduced due to larger model
 num_workers: 8
-max_epochs: 30
-max_steps: 25000  # Doubled for more training
-warmup_steps: 1000  # Increased warmup
+max_epochs: 50
+max_steps: 250000  # Doubled for more training
+warmup_steps: 2000  # Increased warmup
 warmup_ratio: 0.01
 optimizer_type: 'adamW'
 lr_scheduler_type: 'cosine'  # Changed to cosine for better convergence
@@ -42,7 +43,7 @@ lr_bert: 5e-6  # Lower learning rate for stability
 lr_other: 3e-4  # Reduced slightly
 weight_decay: 0.01
 max_grad_norm: 1.0
-accumulation_steps: 2
+accumulation_steps: 1
 
 # GPU Configuration
 use_gpu: True

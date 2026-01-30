@@ -1,12 +1,12 @@
 """
-Training script for nested compound identification using DiffusionSL
+Training script for nested compound identification using DiffusionSL with Cross-Attention DiT
 Adapted for DepNeCTI data with XLM-R encoder
 """
 
 import os
 from argparse import Namespace
 import torch
-from models.ddim_bitdit import BitDit
+from models.ddim_bitdit_cross_attn import BitDitCrossAttn
 from data.ner.necti_dataset import NeCTILabelSet, NeCTIDataset, NeCTICollator
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
@@ -20,8 +20,8 @@ from typing import Dict, List
 import numpy as np
 
 
-class NeCTITrainer:
-    """Trainer for nested compound identification"""
+class NeCTITrainerCrossAttn:
+    """Trainer for nested compound identification using cross-attention DiT"""
     
     def __init__(self, args: Namespace):
         self.args = args
@@ -32,9 +32,10 @@ class NeCTITrainer:
             self.args.use_context = False
         
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
+        model_variant = "cross_attn"  # This trainer always uses cross-attention
         
         if self.args.logger == 'wandb':
-            run_name = f"necti-{args.granularity}-{context_mode}--lr_bert_{args.lr_bert}--lr_other_{args.lr_other}--epochs_{args.max_epochs}"
+            run_name = f"necti-{args.granularity}-{context_mode}-{model_variant}--lr_bert_{args.lr_bert}--lr_other_{args.lr_other}--epochs_{args.max_epochs}"
             wandb.init(project="DiffusionSL-NeCTI", name=run_name)
             wandb.config.update(self.args)
             wandb.define_metric("f1", summary="max")
@@ -55,8 +56,8 @@ class NeCTITrainer:
             print(f"Number of classes ({self.args.num_classes}) adjusted to {len(self.label_set)} based on dataset")
             self.args.num_classes = len(self.label_set)
         
-        # Initialize model with XLM-R backbone
-        self.model = BitDit(
+        # Initialize model with XLM-R backbone and cross-attention DiT
+        self.model = BitDitCrossAttn(
             device=self.device,
             num_classes=self.args.num_classes,
             backbone=self.args.backbone,
@@ -76,7 +77,7 @@ class NeCTITrainer:
             max_length=self.args.max_length,
             depth=self.args.depth,
             num_labels=len(self.label_set)
-        )
+        ).to(self.device)
         
         if self.args.logger == "wandb":
             wandb.watch(self.model, log_freq=1000)
@@ -118,7 +119,7 @@ class NeCTITrainer:
     
     def _print_hyperparameters(self):
         hparams = PrettyTable()
-        hparams.title = 'Hyper Parameters'
+        hparams.title = 'Hyper Parameters (Cross-Attention DiT)'
         hparams.field_names = ["Name", "Value"]
         hparams.add_rows([[k, v] for k, v in self.args.__dict__.items()])
         print(hparams)
@@ -175,7 +176,7 @@ class NeCTITrainer:
         """Main training loop"""
         self._print_num_parameters()
         print("\n" + "=" * 50)
-        print("Starting training...")
+        print("Starting training with Cross-Attention DiT...")
         print("=" * 50 + "\n")
         
         best_f1 = 0.0
@@ -240,13 +241,8 @@ class NeCTITrainer:
             # Save best model
             if dev_results['f1'] > best_f1:
                 best_f1 = dev_results['f1']
-                self._save_model(epoch, dev_results['f1'], is_best=True)
+                self._save_model(epoch, dev_results['f1'])
                 print(f"New best F1: {best_f1:.4f} - Model saved!")
-            
-            # Save checkpoint every 10 epochs
-            if epoch % 10 == 0:
-                self._save_model(epoch, dev_results['f1'], is_best=False)
-                print(f"Checkpoint saved at epoch {epoch}")
         
         # Final evaluation on test set
         print("\n" + "=" * 50)
@@ -289,7 +285,8 @@ class NeCTITrainer:
             seq_labels = batch['seq_labels'].to(self.device)
             compounds = batch['compounds']
             
-            predictions, _ = self.model(input_ids, attention_mask, seq_labels)
+            # Call inference method instead of forward for evaluation
+            predictions = self.model.inference(input_ids, attention_mask)
             
             # Collect predictions and labels (excluding padding)
             mask = (seq_labels != -100)
@@ -313,7 +310,7 @@ class NeCTITrainer:
         
         # For compound identification: treat No_rel and root as negative class
         no_rel_id = self.label_set.label2id('No_rel')
-        root_id = self.label_set.label2id('root')
+        root_id = self.label_set.label2id('Comp_root')
         
         # Binary classification: compound vs non-compound
         pred_is_compound = (predictions != no_rel_id) & (predictions != root_id)
@@ -333,45 +330,35 @@ class NeCTITrainer:
             'f1': f1
         }
     
-    def _save_model(self, epoch, f1_score, is_best=False):
+    def _save_model(self, epoch, f1_score):
         """Save model checkpoint"""
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
-        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}')
+        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}_cross_attn')
         os.makedirs(save_dir, exist_ok=True)
         
-        if is_best:
-            save_path = os.path.join(save_dir, f'best_model_epoch{epoch}_f1{f1_score:.4f}.pt')
-            # Save a "latest best" version for easy loading
-            latest_path = os.path.join(save_dir, 'best_model.pt')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'f1_score': f1_score,
-                'args': self.args
-            }, save_path)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'f1_score': f1_score,
-                'args': self.args
-            }, latest_path)
-        else:
-            # Save periodic checkpoint every 10 epochs
-            save_path = os.path.join(save_dir, f'checkpoint_epoch{epoch}_f1{f1_score:.4f}.pt')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'f1_score': f1_score,
-                'args': self.args
-            }, save_path)
+        save_path = os.path.join(save_dir, f'best_model_epoch{epoch}_f1{f1_score:.4f}.pt')
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'f1_score': f1_score,
+            'args': self.args
+        }, save_path)
+        
+        # Save a "latest" version for easy loading
+        latest_path = os.path.join(save_dir, 'best_model.pt')
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'f1_score': f1_score,
+            'args': self.args
+        }, latest_path)
     
     def _load_best_model(self):
         """Load best model for final evaluation"""
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
-        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}')
+        save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}_cross_attn')
         model_path = os.path.join(save_dir, 'best_model.pt')
         
         if os.path.exists(model_path):
@@ -387,7 +374,7 @@ def main():
     from options import get_args
     args = get_args()
     
-    trainer = NeCTITrainer(args)
+    trainer = NeCTITrainerCrossAttn(args)
     trainer.train()
 
 
