@@ -202,11 +202,32 @@ class NeCTIInference:
                 
                 # Store detailed predictions if requested
                 if save_predictions:
+                    # Get token ids and tokens corresponding to valid positions
+                    token_ids = input_ids[i][valid_mask].cpu().tolist()
+                    tokens = self.tokenizer.convert_ids_to_tokens(token_ids)
+                    # Full input text for this sample (joined/cleaned)
+                    input_text = self.tokenizer.decode(token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+                    
+                    # Merge subword tokens into words and align labels for better readability
+                    merged_pred_tokens, merged_pred_labels = self._merge_subword_tokens(tokens, pred_labels_decoded)
+                    merged_true_tokens, merged_true_labels = self._merge_subword_tokens(tokens, true_labels_decoded)
+                    
+                    # Annotated sentences: token/LABEL style
+                    annotated_pred = " ".join([f"{t}/{l}" for t, l in zip(merged_pred_tokens, merged_pred_labels)])
+                    annotated_true = " ".join([f"{t}/{l}" for t, l in zip(merged_true_tokens, merged_true_labels)])
+                    
                     detailed_predictions.append({
                         'batch_idx': batch_idx,
                         'sample_idx': i,
+                        'input_text': input_text,
+                        'tokens': tokens,
+                        'merged_tokens': merged_pred_tokens,
                         'predictions': pred_labels_decoded,
+                        'merged_predictions': merged_pred_labels,
                         'true_labels': true_labels_decoded,
+                        'merged_true_labels': merged_true_labels,
+                        'annotated_pred': annotated_pred,
+                        'annotated_true': annotated_true
                     })
         
         # Calculate metrics
@@ -389,6 +410,29 @@ class NeCTIInference:
                 lst.append(rel)
         return nested_comp
     
+    # Add helper to merge subword tokens into words and align labels
+    def _merge_subword_tokens(self, tokens: List[str], labels: List[str]):
+        """
+        Merge tokenizer subword pieces (e.g., '##ing') into full words.
+        Returns (merged_tokens, merged_labels) where each merged token is aligned
+        with the label from its first piece.
+        """
+        merged_tokens = []
+        merged_labels = []
+        for tok, lab in zip(tokens, labels):
+            if tok.startswith("##"):
+                # attach to previous token
+                if merged_tokens:
+                    merged_tokens[-1] = merged_tokens[-1] + tok[2:]
+                else:
+                    # fallback if first token starts with ##
+                    merged_tokens.append(tok[2:])
+                    merged_labels.append(lab)
+            else:
+                merged_tokens.append(tok)
+                merged_labels.append(lab)
+        return merged_tokens, merged_labels
+
     def run_inference(self, splits=['test'], batch_size=8, save_predictions=False, output_dir=None,
                   use_mbr=False, num_mbr_samples=5, mbr_temperature=0.8, mbr_metric='uss'):
         """
