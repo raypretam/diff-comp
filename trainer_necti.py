@@ -18,6 +18,9 @@ from prettytable import PrettyTable
 from utils import get_lr_scheduler
 from typing import Dict, List
 import numpy as np
+import json
+
+from data_balancing import BalancedDataLoader, LabelWeightCalculator
 
 
 class NeCTITrainer:
@@ -83,16 +86,16 @@ class NeCTITrainer:
         
         # Initialize tokenizer for XLM-R
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
-        self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length)
+        self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length, add_lstm=self.args.add_lstm)
         
-        # Create data loaders
-        self.train_dataloader = self._get_dataloader('train', self.args.batch_size)
-        self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size)
-        self.test_dataloader = self._get_dataloader('test', self.args.batch_size)
+        # Create data loaders with balanced sampling for training
+        self.train_dataloader, self.train_sampler = self._get_dataloader('train', self.args.batch_size, balanced=True)
+        self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size, balanced=False)
+        self.test_dataloader = self._get_dataloader('test', self.args.batch_size, balanced=False)
         
         # Try to load OOD data if available
         try:
-            self.ood_dataloader = self._get_dataloader('ood', self.args.batch_size)
+            self.ood_dataloader = self._get_dataloader('ood', self.args.batch_size, balanced=False)
         except FileNotFoundError:
             print("OOD dataset not found, skipping...")
             self.ood_dataloader = None
@@ -102,19 +105,56 @@ class NeCTITrainer:
         self.optimizer, self.lr_scheduler = \
             self._configure_optimizer_and_scheduler(self.args.optimizer_type, self.args.lr_scheduler_type)
     
-    def _get_dataloader(self, mode: str, bsz: int):
-        """Create dataloader for specified split"""
+    def _get_dataloader(self, mode: str, bsz: int, balanced: bool = False):
+        """
+        Create dataloader for specified split.
+        
+        Args:
+            mode: 'train', 'dev', 'test', or 'ood'
+            bsz: Batch size
+            balanced: If True, use balanced sampling (for training data)
+        
+        Returns:
+            If balanced: (dataloader, sampler)
+            If not balanced: dataloader
+        """
         dataset = NeCTIDataset(self.dataset_path, mode, self.label_set, use_context=self.args.use_context)
-        shuffle = (mode == 'train')
-        dataloader = DataLoader(
-            dataset,
-            batch_size=bsz,
-            num_workers=self.args.num_workers,
-            drop_last=False,
-            shuffle=shuffle,
-            collate_fn=self.collate_fn
-        )
-        return dataloader
+        
+        if balanced and mode == 'train':
+            # Use balanced sampling for training
+            dataloader, sampler = BalancedDataLoader.create(
+                dataset=dataset,
+                label_set=self.label_set,
+                batch_size=bsz,
+                strategy='weighted',  # Options: 'weighted', 'stratified', 'hard_mining'
+                num_workers=self.args.num_workers,
+                collate_fn=self.collate_fn
+            )
+            
+            # Print and save weight summary
+            sampler.weight_calc.print_weights_summary()
+            
+            # Save weights to file
+            os.makedirs('logs', exist_ok=True)
+            with open('logs/label_weights.json', 'w') as f:
+                json.dump({
+                    str(self.label_set.id2label(label_id)): weight
+                    for label_id, weight in sampler.weight_calc.label_weights.items()
+                }, f, indent=2)
+            
+            return dataloader, sampler
+        else:
+            # Standard dataloader for eval data
+            shuffle = (mode == 'train')
+            dataloader = DataLoader(
+                dataset,
+                batch_size=bsz,
+                num_workers=self.args.num_workers,
+                drop_last=False,
+                shuffle=shuffle,
+                collate_fn=self.collate_fn
+            )
+            return dataloader
     
     def _print_hyperparameters(self):
         hparams = PrettyTable()
@@ -195,8 +235,11 @@ class NeCTITrainer:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 seq_labels = batch['seq_labels'].to(self.device)
+                words2pieces = batch.get('words2pieces', None)
+                if words2pieces is not None:
+                    words2pieces = words2pieces.to(self.device)
                 
-                loss = self.model(input_ids, attention_mask, seq_labels)
+                loss = self.model(input_ids, attention_mask, seq_labels, words2pieces)
                 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -237,16 +280,11 @@ class NeCTITrainer:
                     'epoch': epoch
                 })
             
-            # Save best model
+            # Save only best model
             if dev_results['f1'] > best_f1:
                 best_f1 = dev_results['f1']
                 self._save_model(epoch, dev_results['f1'], is_best=True)
                 print(f"New best F1: {best_f1:.4f} - Model saved!")
-            
-            # Save checkpoint every 10 epochs
-            if epoch % 10 == 0:
-                self._save_model(epoch, dev_results['f1'], is_best=False)
-                print(f"Checkpoint saved at epoch {epoch}")
         
         # Final evaluation on test set
         print("\n" + "=" * 50)
@@ -288,8 +326,11 @@ class NeCTITrainer:
             attention_mask = batch['attention_mask'].to(self.device)
             seq_labels = batch['seq_labels'].to(self.device)
             compounds = batch['compounds']
+            words2pieces = batch.get('words2pieces', None)
+            if words2pieces is not None:
+                words2pieces = words2pieces.to(self.device)
             
-            predictions, _ = self.model(input_ids, attention_mask, seq_labels)
+            predictions, _ = self.model(input_ids, attention_mask, seq_labels, words2pieces)
             
             # Collect predictions and labels (excluding padding)
             mask = (seq_labels != -100)

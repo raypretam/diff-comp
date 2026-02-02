@@ -18,7 +18,7 @@ depth: 12  # INCREASED from 6 to 12 (match coarse model capacity despite 10x mor
 objective: 'pred_x0'
 noise_schedule: 'cosine'  # CHANGED from linear to cosine (better for more steps)
 loss_type: 'l2'
-add_lstm: False
+add_lstm: False  # ENABLED LSTM for better sequence modeling
 freeze_bert: False
 max_length: 256
 network_architecture: 'transformer'

@@ -202,32 +202,32 @@ class NeCTIInference:
                 
                 # Store detailed predictions if requested
                 if save_predictions:
-                    # Get token ids and tokens corresponding to valid positions
-                    token_ids = input_ids[i][valid_mask].cpu().tolist()
-                    tokens = self.tokenizer.convert_ids_to_tokens(token_ids)
-                    # Full input text for this sample (joined/cleaned)
-                    input_text = self.tokenizer.decode(token_ids, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+                    # Get original sentence tokens directly from batch
+                    original_tokens = batch['sentences'][i]
+                    original_text = ' '.join(original_tokens)
                     
-                    # Merge subword tokens into words and align labels for better readability
-                    merged_pred_tokens, merged_pred_labels = self._merge_subword_tokens(tokens, pred_labels_decoded)
-                    merged_true_tokens, merged_true_labels = self._merge_subword_tokens(tokens, true_labels_decoded)
+                    # Use original tokens aligned with predictions
+                    # Predictions are already aligned with original tokens (one label per token)
                     
                     # Annotated sentences: token/LABEL style
-                    annotated_pred = " ".join([f"{t}/{l}" for t, l in zip(merged_pred_tokens, merged_pred_labels)])
-                    annotated_true = " ".join([f"{t}/{l}" for t, l in zip(merged_true_tokens, merged_true_labels)])
+                    annotated_pred = " ".join([f"{t}/{l}" for t, l in zip(original_tokens, pred_labels_decoded)])
+                    annotated_true = " ".join([f"{t}/{l}" for t, l in zip(original_tokens, true_labels_decoded)])
                     
                     detailed_predictions.append({
                         'batch_idx': batch_idx,
                         'sample_idx': i,
-                        'input_text': input_text,
-                        'tokens': tokens,
-                        'merged_tokens': merged_pred_tokens,
+                        'original_text': original_text,
+                        'original_tokens': original_tokens,
                         'predictions': pred_labels_decoded,
-                        'merged_predictions': merged_pred_labels,
                         'true_labels': true_labels_decoded,
-                        'merged_true_labels': merged_true_labels,
                         'annotated_pred': annotated_pred,
-                        'annotated_true': annotated_true
+                        'annotated_true': annotated_true,
+                        'comparison': {
+                            'prediction': pred_labels_decoded,
+                            'ground_truth': true_labels_decoded,
+                            'tokens': original_tokens,
+                            'matches': [pred == true for pred, true in zip(pred_labels_decoded, true_labels_decoded)]
+                        }
                     })
         
         # Calculate metrics
@@ -246,6 +246,22 @@ class NeCTIInference:
         print(f"LSS Recall:   {results['lss_recall']:.4f}")
         print(f"Exact Match:  {results['exact_match']:.4f}")
         print("-" * 50)
+        
+        # Print per-label metrics for diagnosis
+        if 'per_label_metrics' in results and results['per_label_metrics']:
+            print(f"\nPER-LABEL METRICS (sorted by F1):")
+            print("-" * 80)
+            sorted_labels = sorted(
+                results['per_label_metrics'].items(),
+                key=lambda x: x[1]['f1'],
+                reverse=False  # Low F1 first to identify problem areas
+            )
+            
+            for label, metrics in sorted_labels:
+                print(f"{label:20s} | F1: {metrics['f1']:.4f} | Prec: {metrics['precision']:.4f} | "
+                      f"Rec: {metrics['recall']:.4f} | TP: {metrics['tp']:4d} | "
+                      f"FP: {metrics['fp']:4d} | FN: {metrics['fn']:4d} | Total: {metrics['total_occurrences']:4d}")
+            print("-" * 80)
         
         # Add detailed predictions to results
         if save_predictions:
@@ -310,6 +326,9 @@ class NeCTIInference:
         uss = self._calculate_uss(all_true_relations, all_pred_relations)
         lss_metrics = self._calculate_lss(all_true_relations, all_pred_relations)
         
+        # Calculate per-label metrics for diagnosis
+        label_metrics = self._calculate_per_label_metrics(predictions, labels)
+        
         return {
             'precision': precision,
             'recall': recall,
@@ -323,26 +342,32 @@ class NeCTIInference:
             'lss': lss_metrics['f1'],
             'lss_precision': lss_metrics['precision'],
             'lss_recall': lss_metrics['recall'],
-            'exact_match': lss_metrics['exact_match']
+            'exact_match': lss_metrics['exact_match'],
+            'per_label_metrics': label_metrics
         }
     
     def _calculate_uss(self, true_relations: List[List], pred_relations: List[List]) -> float:
-        """Calculate Unlabeled Span Score (USS)"""
+        """Calculate Unlabeled Span Score (USS) - only on relations with labels != 'No_rel'"""
         correct = 0
         true_count = 0
         pred_count = 0
         
         for true_rels, pred_rels in zip(true_relations, pred_relations):
-            # Filter out No_rel and root
-            true_spans = [(r[0], r[1]) for r in true_rels if r[2] != 'No_rel' and r[2] != 'root']
-            pred_spans = [(r[0], r[1]) for r in pred_rels if r[2] != 'No_rel' and r[2] != 'root']
+            # Filter: only consider relations where label != 'No_rel'
+            true_filtered = [r for r in true_rels if r[2] != 'No_rel']
+            pred_filtered = [r for r in pred_rels if r[2] != 'No_rel']
             
-            for span in pred_spans:
-                if span in true_spans:
-                    correct += 1
+            # Compare spans: [token_idx, head_idx]
+            for pred_rel in pred_filtered:
+                pred_span = [pred_rel[0], pred_rel[1]]
+                for true_rel in true_filtered:
+                    true_span = [true_rel[0], true_rel[1]]
+                    if pred_span == true_span:
+                        correct += 1
+                        break
             
-            true_count += len(true_spans)
-            pred_count += len(pred_spans)
+            true_count += len(true_filtered)
+            pred_count += len(pred_filtered)
         
         p = correct / pred_count if pred_count != 0 else 0
         r = correct / true_count if true_count != 0 else 0
@@ -350,8 +375,43 @@ class NeCTIInference:
         
         return f1
     
+    def _calculate_per_label_metrics(self, predictions: np.ndarray, labels: np.ndarray) -> Dict[str, Dict]:
+        """
+        Calculate per-label precision, recall, and F1 to identify problematic labels.
+        This helps diagnose which fine-grain labels cause exact_match failures.
+        """
+        per_label = {}
+        
+        for label_id in range(len(self.label_set)):
+            label_str = self.label_set.id2label(label_id)
+            
+            # True positives, false positives, false negatives for this label
+            tp = np.sum((predictions == label_id) & (labels == label_id))
+            fp = np.sum((predictions == label_id) & (labels != label_id))
+            fn = np.sum((predictions != label_id) & (labels == label_id))
+            
+            # Skip labels with no occurrences
+            if tp + fp + fn == 0:
+                continue
+            
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+            
+            per_label[label_str] = {
+                'tp': int(tp),
+                'fp': int(fp),
+                'fn': int(fn),
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'total_occurrences': int(tp + fn)
+            }
+        
+        return per_label
+    
     def _calculate_lss(self, true_relations: List[List], pred_relations: List[List]) -> Dict[str, float]:
-        """Calculate Labeled Span Score (LSS) and Exact Match"""
+        """Calculate Labeled Span Score (LSS) and Exact Match - matching Eval_USS_LSS.py logic"""
         correct = 0
         predict_count = 0
         true_count = 0
@@ -359,11 +419,11 @@ class NeCTIInference:
         tot_comps = 0
         
         for true_rels, pred_rels in zip(true_relations, pred_relations):
-            # Filter out No_rel and root
+            # Filter: only relations with label != 'No_rel' and != 'root'
             true_rels_filtered = [r for r in true_rels if r[2] != 'No_rel' and r[2] != 'root']
             pred_rels_filtered = [r for r in pred_rels if r[2] != 'No_rel' and r[2] != 'root']
             
-            # Convert to string for comparison
+            # Convert to string format for compound extraction: "token_idx,head_idx,label"
             tr_copy = [','.join(map(str, lst)) for lst in true_rels_filtered]
             pr_copy = [','.join(map(str, lst)) for lst in pred_rels_filtered]
             
@@ -377,7 +437,7 @@ class NeCTIInference:
                     em += 1
             tot_comps += len(tr_comps)
             
-            # Count matching relations
+            # Count matching relations (LSS)
             for rel in pred_rels_filtered:
                 if rel in true_rels_filtered:
                     correct += 1
@@ -385,9 +445,19 @@ class NeCTIInference:
             predict_count += len(pred_rels_filtered)
             true_count += len(true_rels_filtered)
         
-        p = correct / predict_count if predict_count != 0 else 0
-        r = correct / true_count if true_count != 0 else 0
-        f1 = 2 * p * r / (p + r) if p != 0 and r != 0 else 0
+        # Calculate precision, recall, F1
+        if correct == 0:
+            p = 0
+            r = 0
+        else:
+            p = correct / predict_count if predict_count != 0 else 0
+            r = correct / true_count if true_count != 0 else 0
+        
+        if p == 0 or r == 0:
+            f1 = 0
+        else:
+            f1 = 2 * p * r / (p + r)
+        
         em_per = em / tot_comps if tot_comps != 0 else 0
         
         return {
@@ -409,7 +479,7 @@ class NeCTIInference:
             else:
                 lst.append(rel)
         return nested_comp
-    
+
     # Add helper to merge subword tokens into words and align labels
     def _merge_subword_tokens(self, tokens: List[str], labels: List[str]):
         """
