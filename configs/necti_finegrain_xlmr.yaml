@@ -48,3 +48,10 @@ accumulation_steps: 1  # ADDED gradient accumulation for effective batch size 32
 # GPU Configuration
 use_gpu: True
 gpus: 1
+
+# Inference Configuration
+use_cle_decoding: True  # Use Chu-Liu-Edmonds for structured decoding
+
+# Early Stopping Configuration
+patience: 8  # Number of epochs without improvement before stopping (higher for finegrain)
+min_delta: 0.00005  # Minimum improvement threshold

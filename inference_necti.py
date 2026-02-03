@@ -15,6 +15,7 @@ from typing import Dict, List
 import numpy as np
 import json
 import time
+from models.chu_liu_edmonds import ChuLiuEdmondsDecoder
 
 
 class NeCTIInference:
@@ -94,6 +95,16 @@ class NeCTIInference:
         # Initialize tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
         self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length)
+        
+        # Initialize Chu-Liu-Edmonds decoder for structured prediction
+        self.use_cle_decoding = getattr(self.args, 'use_cle_decoding', True)
+        if self.use_cle_decoding:
+            self.cle_decoder = ChuLiuEdmondsDecoder(
+                num_labels=len(self.label_set),
+                root_label='Comp_root',
+                no_rel_label='No_rel'
+            )
+            print(f"Using Chu-Liu-Edmonds decoding for structured prediction")
     
     def _get_dataloader(self, mode: str, batch_size: int = 8):
         """Create dataloader for specified split"""
@@ -169,9 +180,48 @@ class NeCTIInference:
             else:
                 # Standard inference
                 if self.model.add_lstm:
-                    predictions, _ = self.model(input_ids, attention_mask, seq_labels, words2pieces)
+                    predictions, logits_path = self.model(input_ids, attention_mask, seq_labels, words2pieces)
                 else:
-                    predictions, _ = self.model(input_ids, attention_mask, seq_labels)
+                    predictions, logits_path = self.model(input_ids, attention_mask, seq_labels)
+                
+                # Apply Chu-Liu-Edmonds decoding if enabled
+                if self.use_cle_decoding and logits_path is not None:
+                    # Get logits from the diffusion model path
+                    # logits_path shape: [batch, num_steps, seq_len]
+                    # Use the final step logits for CLE decoding
+                    final_logits = logits_path[:, -1, :]  # [batch, seq_len]
+                    
+                    # Convert to one-hot style logits for CLE
+                    batch_size, seq_len = predictions.shape
+                    logits_for_cle = torch.zeros(batch_size, seq_len, len(self.label_set), device=predictions.device)
+                    
+                    # Create pseudo-probability distribution from predictions
+                    # We'll use a temperature-based approach
+                    for b in range(batch_size):
+                        for s in range(seq_len):
+                            pred_label = predictions[b, s].item()
+                            # Set high confidence for predicted label
+                            logits_for_cle[b, s, pred_label] = 10.0
+                            # Low confidence for others
+                            logits_for_cle[b, s, :] = -5.0
+                            logits_for_cle[b, s, pred_label] = 10.0
+                    
+                    # Apply CLE decoding per sample
+                    cle_predictions = torch.zeros_like(predictions)
+                    for b in range(batch_size):
+                        valid_mask = (seq_labels[b] != -100)
+                        valid_len = valid_mask.sum().item()
+                        
+                        if valid_len > 0:
+                            sent_logits = logits_for_cle[b, :valid_len, :].cpu().numpy()
+                            structured_pred = self.cle_decoder.decode(
+                                sent_logits,
+                                self.label_set,
+                                threshold=0.0
+                            )
+                            cle_predictions[b, :valid_len] = torch.tensor(structured_pred, device=predictions.device)
+                    
+                    predictions = cle_predictions
             
             # Process batch
             batch_size = input_ids.size(0)

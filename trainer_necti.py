@@ -34,6 +34,20 @@ class NeCTITrainer:
         if not hasattr(self.args, 'use_context'):
             self.args.use_context = False
         
+        # Set default value for save_limit if not present
+        if not hasattr(self.args, 'save_limit'):
+            self.args.save_limit = 3
+        
+        # Track saved checkpoint files for cleanup
+        self.saved_checkpoints = []
+        
+        # Early stopping
+        self.patience = getattr(self.args, 'patience', 5)
+        self.min_delta = getattr(self.args, 'min_delta', 0.0001)
+        self.early_stopping_counter = 0
+        self.best_f1_for_early_stopping = 0.0
+        print(f"Early stopping enabled with patience={self.patience}, min_delta={self.min_delta}")
+        
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
         
         if self.args.logger == 'wandb':
@@ -285,6 +299,28 @@ class NeCTITrainer:
                 best_f1 = dev_results['f1']
                 self._save_model(epoch, dev_results['f1'], is_best=True)
                 print(f"New best F1: {best_f1:.4f} - Model saved!")
+            
+            # Early stopping check
+            if dev_results['f1'] > self.best_f1_for_early_stopping + self.min_delta:
+                # Significant improvement
+                self.best_f1_for_early_stopping = dev_results['f1']
+                self.early_stopping_counter = 0
+            else:
+                # No significant improvement
+                self.early_stopping_counter += 1
+                print(f"Early stopping counter: {self.early_stopping_counter}/{self.patience}")
+                
+                if self.early_stopping_counter >= self.patience:
+                    print(f"\n{'='*50}")
+                    print(f"Early stopping triggered after {epoch} epochs!")
+                    print(f"Best F1 score: {best_f1:.4f}")
+                    print(f"{'='*50}\n")
+                    break
+            
+            # Save checkpoint every 20 epochs
+            if epoch % 20 == 0:
+                self._save_model(epoch, dev_results['f1'], is_best=False)
+                print(f"Checkpoint saved at epoch {epoch}")
         
         # Final evaluation on test set
         print("\n" + "=" * 50)
@@ -380,34 +416,34 @@ class NeCTITrainer:
         save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}')
         os.makedirs(save_dir, exist_ok=True)
         
+        checkpoint_data = {
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'f1_score': f1_score,
+            'args': self.args
+        }
+        
         if is_best:
             save_path = os.path.join(save_dir, f'best_model_epoch{epoch}_f1{f1_score:.4f}.pt')
             # Save a "latest best" version for easy loading
             latest_path = os.path.join(save_dir, 'best_model.pt')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'f1_score': f1_score,
-                'args': self.args
-            }, save_path)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'f1_score': f1_score,
-                'args': self.args
-            }, latest_path)
+            torch.save(checkpoint_data, save_path)
+            torch.save(checkpoint_data, latest_path)
         else:
-            # Save periodic checkpoint every 10 epochs
+            # Save periodic checkpoint
             save_path = os.path.join(save_dir, f'checkpoint_epoch{epoch}_f1{f1_score:.4f}.pt')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'f1_score': f1_score,
-                'args': self.args
-            }, save_path)
+            torch.save(checkpoint_data, save_path)
+            
+            # Track this checkpoint
+            self.saved_checkpoints.append(save_path)
+            
+            # Remove old checkpoints if limit exceeded
+            if len(self.saved_checkpoints) > self.args.save_limit:
+                old_checkpoint = self.saved_checkpoints.pop(0)
+                if os.path.exists(old_checkpoint):
+                    os.remove(old_checkpoint)
+                    print(f"Removed old checkpoint: {os.path.basename(old_checkpoint)}")
     
     def _load_best_model(self):
         """Load best model for final evaluation"""

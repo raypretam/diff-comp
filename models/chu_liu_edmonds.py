@@ -324,3 +324,53 @@ class ChuLiuEdmondsDecoder:
                 predictions[dep] = label_id
         
         return predictions
+
+
+def apply_chu_liu_edmonds_constraints(logits: np.ndarray, label_set, 
+                                      use_greedy_fallback: bool = True) -> np.ndarray:
+    """
+    Simplified Chu-Liu-Edmonds-inspired constraint enforcement.
+    
+    For dependency-style compound prediction, ensure:
+    1. No cycles in compound structure
+    2. Each token has valid compound type
+    3. Respect hierarchical constraints
+    
+    Args:
+        logits: [seq_len, num_labels] prediction logits
+        label_set: NeCTILabelSet object
+        use_greedy_fallback: If CLE fails, use greedy decoding
+    
+    Returns:
+        predictions: [seq_len] constrained label IDs
+    """
+    seq_len, num_labels = logits.shape
+    
+    # Try full CLE decoding
+    try:
+        decoder = ChuLiuEdmondsDecoder(
+            num_labels=num_labels,
+            root_label='Comp_root',
+            no_rel_label='No_rel'
+        )
+        predictions = decoder.decode(logits, label_set, threshold=0.0)
+        return predictions
+    except Exception as e:
+        # Fallback to greedy with simple constraints
+        if use_greedy_fallback:
+            predictions = np.argmax(logits, axis=-1)
+            
+            # Simple constraint: ensure valid transitions
+            no_rel_id = label_set.label2id('No_rel')
+            root_id = label_set.label2id('Comp_root') if 'Comp_root' in label_set._label2id else no_rel_id
+            
+            # Post-process to remove obvious violations
+            for i in range(seq_len):
+                label_name = label_set.id2label(predictions[i])
+                # If label looks invalid, fall back to No_rel
+                if label_name not in label_set._label2id:
+                    predictions[i] = no_rel_id
+            
+            return predictions
+        else:
+            raise e

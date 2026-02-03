@@ -58,6 +58,7 @@ def get_parser():
     parser.add_argument("--weight_decay", default=1e-5, type=float)
     parser.add_argument("--accumulation_steps", default=4, type=int)
     parser.add_argument("--test_path", action='store_true')
+    parser.add_argument('--save_limit', type=int, default=3, help='Maximum number of checkpoints to keep (excluding best model)')
     
     # NeCTI-specific args
     parser.add_argument("--data_path", default="/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data", type=str,
@@ -68,6 +69,10 @@ def get_parser():
                        help="Use 'With Context' data instead of 'Without Context' data")
     parser.add_argument("--depth", default=6, type=int, help="Depth of DiT model")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm for clipping")
+    parser.add_argument("--use_cle_decoding", action='store_true', default=True,
+                       help="Use Chu-Liu-Edmonds algorithm for structured decoding during inference")
+    parser.add_argument("--patience", default=5, type=int, help="Early stopping patience (number of epochs)")
+    parser.add_argument("--min_delta", default=0.0001, type=float, help="Minimum improvement for early stopping")
     
     args = parser.parse_args()
     default_path = os.path.join(os.getcwd(), "configs", args.config_file)
