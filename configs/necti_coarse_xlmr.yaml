@@ -50,7 +50,7 @@ use_gpu: True
 gpus: 1
 
 # Inference Configuration
-use_cle_decoding: True  # Use Chu-Liu-Edmonds for structured decoding
+use_cle_decoding: False  # CLE disabled - not suitable for token-based evaluation
 
 # Early Stopping Configuration
 patience: 5  # Number of epochs without improvement before stopping

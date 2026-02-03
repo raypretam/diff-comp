@@ -186,44 +186,20 @@ class NeCTIInference:
                 else:
                     predictions, logits_path = self.model(input_ids, attention_mask, seq_labels)
                 
-                # Apply Chu-Liu-Edmonds decoding if enabled
-                if self.use_cle_decoding and logits_path is not None:
-                    # Get logits from the diffusion model path
-                    # logits_path shape: [batch, num_steps, seq_len]
-                    # Use the final step logits for CLE decoding
-                    final_logits = logits_path[:, -1, :]  # [batch, seq_len]
-                    
-                    # Convert to one-hot style logits for CLE
-                    batch_size, seq_len = predictions.shape
-                    logits_for_cle = torch.zeros(batch_size, seq_len, len(self.label_set), device=predictions.device)
-                    
-                    # Create pseudo-probability distribution from predictions
-                    # We'll use a temperature-based approach
-                    for b in range(batch_size):
-                        for s in range(seq_len):
-                            pred_label = predictions[b, s].item()
-                            # Set high confidence for predicted label
-                            logits_for_cle[b, s, pred_label] = 10.0
-                            # Low confidence for others
-                            logits_for_cle[b, s, :] = -5.0
-                            logits_for_cle[b, s, pred_label] = 10.0
-                    
-                    # Apply CLE decoding per sample
-                    cle_predictions = torch.zeros_like(predictions)
-                    for b in range(batch_size):
-                        valid_mask = (seq_labels[b] != -100)
-                        valid_len = valid_mask.sum().item()
-                        
-                        if valid_len > 0:
-                            sent_logits = logits_for_cle[b, :valid_len, :].cpu().numpy()
-                            structured_pred = self.cle_decoder.decode(
-                                sent_logits,
-                                self.label_set,
-                                threshold=0.0
-                            )
-                            cle_predictions[b, :valid_len] = torch.tensor(structured_pred, device=predictions.device)
-                    
-                    predictions = cle_predictions
+                # NOTE: CLE decoding disabled for token-based evaluation
+                # CLE (Chu-Liu-Edmonds) is designed for dependency parsing with head-dependent
+                # relations, not token classification. Using CLE on token labels causes:
+                # - Predictions defaulting to Comp_root (all tokens become roots)
+                # - USS=1.0 (perfect structure) but LSS=0.24 (wrong labels)
+                # - EM near zero (0.02%)
+                #
+                # For proper CLE integration, we would need:
+                # 1. True probability distributions from diffusion model (not discrete predictions)
+                # 2. Dependency parsing formulation (head-dependent arcs)
+                # 3. Training the model with tree structure constraints
+                #
+                # Current evaluation is token-based, so CLE is inappropriate.
+                # Keep standard diffusion sampling instead.
             
             # Process batch
             batch_size = input_ids.size(0)
