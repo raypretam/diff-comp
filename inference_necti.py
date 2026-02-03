@@ -21,7 +21,8 @@ from models.chu_liu_edmonds import ChuLiuEdmondsDecoder
 class NeCTIInference:
     """Inference for nested compound identification"""
     
-    def __init__(self, model_path: str, data_path: str, granularity: str, use_context: bool = False, device: str = 'cuda'):
+    def __init__(self, model_path: str, data_path: str, granularity: str, use_context: bool = False, 
+                 device: str = 'cuda', use_cle_decoding: bool = True):
         """
         Initialize inference
         
@@ -31,6 +32,7 @@ class NeCTIInference:
             granularity: 'Coarse' or 'Finegrain'
             use_context: Whether to use 'With Context' data
             device: Device to run inference on
+            use_cle_decoding: Whether to use Chu-Liu-Edmonds decoding
         """
         self.model_path = model_path
         self.data_path = data_path
@@ -97,7 +99,7 @@ class NeCTIInference:
         self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length)
         
         # Initialize Chu-Liu-Edmonds decoder for structured prediction
-        self.use_cle_decoding = getattr(self.args, 'use_cle_decoding', True)
+        self.use_cle_decoding = use_cle_decoding
         if self.use_cle_decoding:
             self.cle_decoder = ChuLiuEdmondsDecoder(
                 num_labels=len(self.label_set),
@@ -824,6 +826,10 @@ def main():
     parser.add_argument('--mbr_metric', type=str, default='uss',
                         choices=['uss', 'lss', 'voting'],
                         help='Metric for MBR selection (uss=unlabeled span, lss=labeled span, voting=majority vote)')
+    parser.add_argument('--use_cle_decoding', action='store_true', default=True,
+                        help='Use Chu-Liu-Edmonds algorithm for structured decoding (default: True)')
+    parser.add_argument('--no-use_cle_decoding', dest='use_cle_decoding', action='store_false',
+                        help='Disable Chu-Liu-Edmonds decoding')
 
     args = parser.parse_args()
     
@@ -833,7 +839,8 @@ def main():
         data_path=args.data_path,
         granularity=args.granularity,
         use_context=args.use_context,
-        device=args.device
+        device=args.device,
+        use_cle_decoding=args.use_cle_decoding
     )
     
     # Run inference with MBR support
