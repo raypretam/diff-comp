@@ -31,6 +31,13 @@ class NeCTITrainerCrossAttn:
         if not hasattr(self.args, 'use_context'):
             self.args.use_context = False
         
+        # Early stopping
+        self.patience = getattr(self.args, 'patience', 5)
+        self.min_delta = getattr(self.args, 'min_delta', 0.0001)
+        self.early_stopping_counter = 0
+        self.best_f1_for_early_stopping = 0.0
+        print(f"Early stopping enabled with patience={self.patience}, min_delta={self.min_delta}")
+        
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
         model_variant = "cross_attn"  # This trainer always uses cross-attention
         
@@ -243,6 +250,23 @@ class NeCTITrainerCrossAttn:
                 best_f1 = dev_results['f1']
                 self._save_model(epoch, dev_results['f1'])
                 print(f"New best F1: {best_f1:.4f} - Model saved!")
+            
+            # Early stopping check
+            if dev_results['f1'] > self.best_f1_for_early_stopping + self.min_delta:
+                # Significant improvement
+                self.best_f1_for_early_stopping = dev_results['f1']
+                self.early_stopping_counter = 0
+            else:
+                # No significant improvement
+                self.early_stopping_counter += 1
+                print(f"Early stopping counter: {self.early_stopping_counter}/{self.patience}")
+                
+                if self.early_stopping_counter >= self.patience:
+                    print(f"\n{'='*50}")
+                    print(f"Early stopping triggered after {epoch} epochs!")
+                    print(f"Best F1 score: {best_f1:.4f}")
+                    print(f"{'='*50}\n")
+                    break
         
         # Final evaluation on test set
         print("\n" + "=" * 50)
