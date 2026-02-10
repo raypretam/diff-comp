@@ -31,6 +31,13 @@ class NeCTITrainerCrossAttn:
         if not hasattr(self.args, 'use_context'):
             self.args.use_context = False
         
+        # Set default value for save_limit if not present
+        if not hasattr(self.args, 'save_limit'):
+            self.args.save_limit = 3
+        
+        # Track saved checkpoint files for cleanup
+        self.saved_checkpoints = []
+        
         # Early stopping
         self.patience = getattr(self.args, 'patience', 5)
         self.min_delta = getattr(self.args, 'min_delta', 0.0001)
@@ -309,8 +316,8 @@ class NeCTITrainerCrossAttn:
             seq_labels = batch['seq_labels'].to(self.device)
             compounds = batch['compounds']
             
-            # Call inference method instead of forward for evaluation
-            predictions = self.model.inference(input_ids, attention_mask)
+            # Forward returns (predictions, path) during inference
+            predictions, _ = self.model(input_ids, attention_mask, seq_labels)
             
             # Collect predictions and labels (excluding padding)
             mask = (seq_labels != -100)
@@ -360,24 +367,33 @@ class NeCTITrainerCrossAttn:
         save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}_cross_attn')
         os.makedirs(save_dir, exist_ok=True)
         
-        save_path = os.path.join(save_dir, f'best_model_epoch{epoch}_f1{f1_score:.4f}.pt')
-        torch.save({
+        checkpoint_data = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'f1_score': f1_score,
             'args': self.args
-        }, save_path)
+        }
+        
+        save_path = os.path.join(save_dir, f'best_model_epoch{epoch}_f1{f1_score:.4f}.pt')
+        torch.save(checkpoint_data, save_path)
         
         # Save a "latest" version for easy loading
         latest_path = os.path.join(save_dir, 'best_model.pt')
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'f1_score': f1_score,
-            'args': self.args
-        }, latest_path)
+        torch.save(checkpoint_data, latest_path)
+        
+        # Track this checkpoint with its F1 score
+        self.saved_checkpoints.append((save_path, f1_score))
+        
+        # Keep only top 3 models by F1 score
+        if len(self.saved_checkpoints) > self.args.save_limit:
+            # Sort by F1 score (descending)
+            self.saved_checkpoints.sort(key=lambda x: x[1], reverse=True)
+            # Remove the worst model
+            old_checkpoint_path, old_f1 = self.saved_checkpoints.pop()
+            if os.path.exists(old_checkpoint_path):
+                os.remove(old_checkpoint_path)
+                print(f"Removed old checkpoint: {os.path.basename(old_checkpoint_path)} (F1: {old_f1:.4f})")
     
     def _load_best_model(self):
         """Load best model for final evaluation"""

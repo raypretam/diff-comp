@@ -15,7 +15,7 @@ export TOKENIZERS_PARALLELISM=false
 # Training configuration
 CONFIG_FILE="necti_coarse_xlmr.yaml"
 GRANULARITY="Coarse"
-BACKBONE="xlm-roberta-base"
+BACKBONE="xlm-roberta-large"
 DATA_PATH="/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data"
 
 # Context mode: uncomment one of the following

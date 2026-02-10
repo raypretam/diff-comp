@@ -1,0 +1,328 @@
+Loading predictions from: /home/pretam-pg/DiffusionSL/inference_results/necti_finegrain_with_ctx/test_predictions.json
+Loaded 2940 samples
+
+
+================================================================================
+LABEL CONFUSION ANALYSIS
+================================================================================
+
+Most confused labels (True Label → Predicted Label):
+--------------------------------------------------------------------------------
+ 173 errors: T6              → K1             
+ 162 errors: No_rel          → Comp_root      
+ 162 errors: K1              → T6             
+ 133 errors: Comp_root       → No_rel         
+ 116 errors: Di              → T6             
+  75 errors: T6              → Di             
+  72 errors: T6              → K7             
+  69 errors: Di              → Ds             
+  68 errors: Bs6             → K1             
+  64 errors: T6              → T3             
+  60 errors: T3              → T6             
+  60 errors: No_rel          → T6             
+  59 errors: T6              → T7             
+  55 errors: T6              → Ds             
+  51 errors: T7              → T6             
+  49 errors: Ds              → Di             
+  47 errors: U               → T6             
+  47 errors: Bs6             → T6             
+  45 errors: T6              → No_rel         
+  44 errors: K1              → Bs6            
+
+--------------------------------------------------------------------------------
+Labels with most total errors (by true label):
+--------------------------------------------------------------------------------
+ 834 errors: T6
+ 465 errors: K1
+ 401 errors: No_rel
+ 359 errors: Di
+ 234 errors: Bs6
+ 218 errors: Comp_root
+ 157 errors: T3
+ 133 errors: T7
+  95 errors: U
+  86 errors: K7
+  73 errors: Ds
+  68 errors: Bb
+  59 errors: T5
+  55 errors: K6
+  36 errors: Bs3
+
+================================================================================
+COMPOUND-LEVEL ERROR ANALYSIS
+================================================================================
+
+Perfect Compounds:   3507 (58.31%)
+Failed Compounds:    2507 (41.69%)
+Total Compounds:     6014
+
+--------------------------------------------------------------------------------
+Most common compound errors (True compound type):
+--------------------------------------------------------------------------------
+
+T6_T6_Comp_root - 67 failures (avg 1.21 errors/instance)
+  Example 1: भारतीय स्वतन्त्रता आकाम्यमाना
+    True: T6_T6_ROOT
+    Pred: T6_T4_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→T4
+  Example 2: आत्मन् निर्वाह योग्यम्
+    True: T6_T6_ROOT
+    Pred: T6_T4_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→T4
+  Example 3: स्व त्रुटि कृते
+    True: T6_T6_ROOT
+    Pred: T6_T5_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→T5
+
+T6_Comp_root - 63 failures (avg 1.08 errors/instance)
+  Example 1: शरीर अन्तर्वर्ती
+    True: T6_ROOT
+    Pred: Tm_ROOT
+    Pattern:  ✗✓
+    Mismatches: T6→Tm
+  Example 2: वि क्षेपयन्त
+    True: T6_ROOT
+    Pred: Tp_ROOT
+    Pattern:  ✗✓
+    Mismatches: T6→Tp
+  Example 3: योग शास्त्रे
+    True: T6_ROOT
+    Pred: K7_ROOT
+    Pattern:  ✗✓
+    Mismatches: T6→K7
+
+No_rel_T6_Comp_root - 52 failures (avg 1.19 errors/instance)
+  Example 1: युतः महर्षि कल्पः
+    True: No_rel_T6_ROOT
+    Pred: No_rel_T5_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→T5
+  Example 2: विसर्गे गात्र लाघवे
+    True: No_rel_T6_ROOT
+    Pred: No_rel_Ds_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→Ds
+  Example 3: इत्यत्र नवीन मते
+    True: No_rel_T6_ROOT
+    Pred: No_rel_K1_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→K1
+
+K1_Comp_root - 47 failures (avg 1.15 errors/instance)
+  Example 1: अग्र पादयोः
+    True: K1_ROOT
+    Pred: k1_ROOT
+    Pattern:  ✗✓
+    Mismatches: K1→k1
+  Example 2: समुन्नत बुद्धे
+    True: K1_ROOT
+    Pred: Bs6_ROOT
+    Pattern:  ✗✓
+    Mismatches: K1→Bs6
+  Example 3: राजन् ऋर्षिः
+    True: K1_ROOT
+    Pred: T6_ROOT
+    Pattern:  ✗✓
+    Mismatches: K1→T6
+
+No_rel_T6_T6_Comp_root - 42 failures (avg 1.17 errors/instance)
+  Example 1: भूत्वा दिक् विजय यात्रायै
+    True: No_rel_T6_T6_ROOT
+    Pred: No_rel_T7_T6_ROOT
+    Pattern:  ✓✗✓✓
+    Mismatches: T6→T7
+  Example 2: सदा स्व अर्थ पोषणम्
+    True: No_rel_T6_T6_ROOT
+    Pred: No_rel_T4_T6_ROOT
+    Pattern:  ✓✗✓✓
+    Mismatches: T6→T4
+  Example 3: इत्थम्च शक्ति त्रय कल्पनया
+    True: No_rel_T6_T6_ROOT
+    Pred: No_rel_T6_T7_ROOT
+    Pattern:  ✓✓✗✓
+    Mismatches: T6→T7
+
+No_rel_No_rel_T6_T6_Comp_root - 31 failures (avg 1.32 errors/instance)
+  Example 1: इति श्रुतिः कर्मन् फल सामान्यस्य
+    True: No_rel_No_rel_T6_T6_ROOT
+    Pred: No_rel_No_rel_T6_T7_ROOT
+    Pattern:  ✓✓✓✗✓
+    Mismatches: T6→T7
+  Example 2: न तु सत् बुद्धि विषयः
+    True: No_rel_No_rel_T6_T6_ROOT
+    Pred: No_rel_No_rel_K1_T6_ROOT
+    Pattern:  ✓✓✗✓✓
+    Mismatches: T6→K1
+  Example 3: तत्र सः चित्र पट विषयकानि
+    True: No_rel_No_rel_T6_T6_ROOT
+    Pred: No_rel_No_rel_T6_Bs6_ROOT
+    Pattern:  ✓✓✓✗✓
+    Mismatches: T6→Bs6
+
+No_rel_No_rel_T6_Comp_root - 29 failures (avg 1.17 errors/instance)
+  Example 1: अहम् आत्मा गुडाका ईश
+    True: No_rel_No_rel_T6_ROOT
+    Pred: No_rel_No_rel_No_rel_No_rel
+    Pattern:  ✓✓✗✗
+    Mismatches: T6→No_rel, Comp_root→No_rel
+  Example 2: समुत्पन्नः अपि तत् पुत्रः
+    True: No_rel_No_rel_T6_ROOT
+    Pred: No_rel_No_rel_K1_ROOT
+    Pattern:  ✓✓✗✓
+    Mismatches: T6→K1
+  Example 3: विद्धि जानीहि प्रकृति संभवान्
+    True: No_rel_No_rel_T6_ROOT
+    Pred: No_rel_No_rel_T3_ROOT
+    Pattern:  ✓✓✗✓
+    Mismatches: T6→T3
+
+No_rel_K1_Comp_root - 22 failures (avg 1.14 errors/instance)
+  Example 1: तथाविधानामेव शालि तण्डुलानाम्
+    True: No_rel_K1_ROOT
+    Pred: No_rel_Di_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: K1→Di
+  Example 2: संसारः नित्य प्रततः
+    True: No_rel_K1_ROOT
+    Pred: No_rel_Bs6_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: K1→Bs6
+  Example 3: विज्ञाय प्रसन्न मनाः
+    True: No_rel_K1_ROOT
+    Pred: No_rel_Bs6_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: K1→Bs6
+
+No_rel_Bs6_Comp_root - 20 failures (avg 1.20 errors/instance)
+  Example 1: न पाप वृत्तान्
+    True: No_rel_Bs6_ROOT
+    Pred: Tn_K1_ROOT
+    Pattern:  ✗✗✓
+    Mismatches: No_rel→Tn, Bs6→K1
+  Example 2: आत्मानम् दर्शयितु कामौ
+    True: No_rel_Bs6_ROOT
+    Pred: No_rel_No_rel_No_rel
+    Pattern:  ✓✗✗
+    Mismatches: Bs6→No_rel, Comp_root→No_rel
+  Example 3: पुत्रिकया वटिका नाम
+    True: No_rel_Bs6_ROOT
+    Pred: No_rel_No_rel_No_rel
+    Pattern:  ✓✗✗
+    Mismatches: Bs6→No_rel, Comp_root→No_rel
+
+K1_T6_Comp_root - 20 failures (avg 1.15 errors/instance)
+  Example 1: सर्व विक्रिया प्रतिषेधैः
+    True: K1_T6_ROOT
+    Pred: K1_T5_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→T5
+  Example 2: भिन्न पुरुष विषयत्वात्
+    True: K1_T6_ROOT
+    Pred: K1_K7_ROOT
+    Pattern:  ✓✗✓
+    Mismatches: T6→K7
+  Example 3: बाध ज्ञान विधया
+    True: K1_T6_ROOT
+    Pred: T6_T6_ROOT
+    Pattern:  ✗✓✓
+    Mismatches: K1→T6
+
+No_rel_No_rel_No_rel_T6_Comp_root - 19 failures (avg 1.32 errors/instance)
+  Example 1: पुन सङ्क्षेपेण एव स्वकीय राज्यस्य
+    True: No_rel_No_rel_No_rel_T6_ROOT
+    Pred: No_rel_No_rel_No_rel_K1_ROOT
+    Pattern:  ✓✓✓✗✓
+    Mismatches: T6→K1
+  Example 2: अश्नन्ति दिव्यान् दिवि देव भोगान्
+    True: No_rel_No_rel_No_rel_T6_ROOT
+    Pred: No_rel_No_rel_K1_T6_ROOT
+    Pattern:  ✓✓✗✓✓
+    Mismatches: No_rel→K1
+  Example 3: विक्रीणीसि इति जनश्रुति कर्ण आकर्णि
+    True: No_rel_No_rel_No_rel_T6_ROOT
+    Pred: No_rel_No_rel_T6_ROOT_No_rel
+    Pattern:  ✓✓✗✗✗
+    Mismatches: No_rel→T6, T6→Comp_root, Comp_root→No_rel
+
+No_rel_No_rel_Bs6_Comp_root - 19 failures (avg 1.21 errors/instance)
+  Example 1: न दोषः फल मुख
+    True: No_rel_No_rel_Bs6_ROOT
+    Pred: No_rel_No_rel_T6_ROOT
+    Pattern:  ✓✓✗✓
+    Mismatches: Bs6→T6
+  Example 2: धीरा अपि स्थिर मति
+    True: No_rel_No_rel_Bs6_ROOT
+    Pred: No_rel_No_rel_T6_T6
+    Pattern:  ✓✓✗✗
+    Mismatches: Bs6→T6, Comp_root→T6
+  Example 3: तु तीरे नदी द्वारकः
+    True: No_rel_No_rel_Bs6_ROOT
+    Pred: No_rel_No_rel_T6_ROOT
+    Pattern:  ✓✓✗✓
+    Mismatches: Bs6→T6
+
+No_rel_No_rel_No_rel_T6_T6_Comp_root - 18 failures (avg 1.28 errors/instance)
+  Example 1: सः अत्र आगत्य कृषि सम्बन्धि ज्ञानं
+    True: No_rel_No_rel_No_rel_T6_T6_ROOT
+    Pred: No_rel_No_rel_No_rel_T4_K1_ROOT
+    Pattern:  ✓✓✓✗✗✓
+    Mismatches: T6→T4, T6→K1
+  Example 2: पर्वते तत्र न धूम वैशिष्ट्य ज्ञानम्
+    True: No_rel_No_rel_No_rel_T6_T6_ROOT
+    Pred: No_rel_No_rel_Tn_Tds_T6_ROOT
+    Pattern:  ✓✓✗✗✓✓
+    Mismatches: No_rel→Tn, T6→Tds
+  Example 3: शालिनि प्राङ्गणे एव धान्य पुञ्ज उपरि
+    True: No_rel_No_rel_No_rel_T6_T6_ROOT
+    Pred: ROOT_No_rel_No_rel_T6_T6_ROOT
+    Pattern:  ✗✓✓✓✓✓
+    Mismatches: No_rel→Comp_root
+
+T6_T3_Comp_root - 18 failures (avg 1.22 errors/instance)
+  Example 1: पण्डित ग्राम मण्डितः
+    True: T6_T3_ROOT
+    Pred: K1_T7_ROOT
+    Pattern:  ✗✗✓
+    Mismatches: T6→K1, T3→T7
+  Example 2: विद्या गंध विहीनः
+    True: T6_T3_ROOT
+    Pred: Di_T3_ROOT
+    Pattern:  ✗✓✓
+    Mismatches: T6→Di
+  Example 3: समर परिच्छद परिवृतः
+    True: T6_T3_ROOT
+    Pred: T7_T3_ROOT
+    Pattern:  ✗✓✓
+    Mismatches: T6→T7
+
+Bs6_Comp_root - 17 failures (avg 1.18 errors/instance)
+  Example 1: न अन्तः
+    True: Bs6_ROOT
+    Pred: No_rel_No_rel
+    Pattern:  ✗✗
+    Mismatches: Bs6→No_rel, Comp_root→No_rel
+  Example 2: न पारः
+    True: Bs6_ROOT
+    Pred: No_rel_No_rel
+    Pattern:  ✗✗
+    Mismatches: Bs6→No_rel, Comp_root→No_rel
+  Example 3: पण्डित रूपैः
+    True: Bs6_ROOT
+    Pred: T7_ROOT
+    Pattern:  ✗✓
+    Mismatches: Bs6→T7
+
+================================================================================
+KEY INSIGHTS:
+================================================================================
+1. Labels with low F1 in per-label metrics are causing exact_match failures
+2. Most common confusions show which fine-grain distinctions model struggles with
+3. Compound-level analysis shows if errors cluster in specific compound types
+
+RECOMMENDATIONS:
+- Focus training on low-F1 labels with increased weight
+- Review training data for confused label pairs
+- Consider: Class imbalance, label similarity, or insufficient training data

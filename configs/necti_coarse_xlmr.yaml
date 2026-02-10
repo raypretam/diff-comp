@@ -18,6 +18,8 @@ depth: 6  # Doubled from 6 for deeper architecture
 objective: 'pred_x0'
 noise_schedule: 'cosine'  # Changed from linear to cosine
 loss_type: 'l2'
+compound_aware: True  # Enable compound-level diffusion
+compound_pooling: 'mean'  # Pooling method for compound encoding
 add_lstm: False  # Set to True to enable LSTM for word-level features (requires words2pieces)
 freeze_bert: False
 max_length: 256

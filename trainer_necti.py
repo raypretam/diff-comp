@@ -72,6 +72,15 @@ class NeCTITrainer:
             print(f"Number of classes ({self.args.num_classes}) adjusted to {len(self.label_set)} based on dataset")
             self.args.num_classes = len(self.label_set)
         
+        # Get compound-aware parameters
+        compound_aware = getattr(self.args, 'compound_aware', False)
+        compound_pooling = getattr(self.args, 'compound_pooling', 'mean')
+        
+        # Get contrastive learning parameters
+        use_contrastive = getattr(self.args, 'use_contrastive', False)
+        contrastive_weight = getattr(self.args, 'contrastive_weight', 0.1)
+        contrastive_config = self.args if use_contrastive else None
+        
         # Initialize model with XLM-R backbone
         self.model = BitDit(
             device=self.device,
@@ -92,7 +101,13 @@ class NeCTITrainer:
             freeze_bert=self.args.freeze_bert,
             max_length=self.args.max_length,
             depth=self.args.depth,
-            num_labels=len(self.label_set)
+            num_labels=len(self.label_set),
+            compound_aware=compound_aware,
+            compound_pooling=compound_pooling,
+            label_set=self.label_set if compound_aware else None,
+            use_contrastive=use_contrastive,
+            contrastive_weight=contrastive_weight,
+            contrastive_config=contrastive_config
         )
         
         if self.args.logger == "wandb":
@@ -102,8 +117,8 @@ class NeCTITrainer:
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
         self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length, add_lstm=self.args.add_lstm)
         
-        # Create data loaders with balanced sampling for training
-        self.train_dataloader, self.train_sampler = self._get_dataloader('train', self.args.batch_size, balanced=True)
+        # Create data loaders (using standard sampling for all splits)
+        self.train_dataloader = self._get_dataloader('train', self.args.batch_size, balanced=False)
         self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size, balanced=False)
         self.test_dataloader = self._get_dataloader('test', self.args.batch_size, balanced=False)
         
@@ -114,7 +129,24 @@ class NeCTITrainer:
             print("OOD dataset not found, skipping...")
             self.ood_dataloader = None
         
-        self.steps = self.args.max_steps
+        # Calculate actual total training steps based on dataloader size and epochs
+        self.steps_per_epoch = len(self.train_dataloader)
+        self.total_steps = self.args.max_epochs * self.steps_per_epoch
+        
+        # Calculate warmup steps as a percentage of total steps if not explicitly set or zero
+        if self.args.warmup_steps == 0:
+            self.warmup_steps = int(0.1 * self.total_steps)  # 10% warmup by default
+        else:
+            self.warmup_steps = self.args.warmup_steps
+        
+        print(f"\n{'='*80}")
+        print("Training Configuration:")
+        print(f"{'='*80}")
+        print(f"Steps per epoch: {self.steps_per_epoch}")
+        print(f"Total epochs: {self.args.max_epochs}")
+        print(f"Total training steps: {self.total_steps}")
+        print(f"Warmup steps: {self.warmup_steps} ({100*self.warmup_steps/self.total_steps:.1f}% of total)")
+        print(f"{'='*80}\n")
         
         self.optimizer, self.lr_scheduler = \
             self._configure_optimizer_and_scheduler(self.args.optimizer_type, self.args.lr_scheduler_type)
@@ -183,6 +215,28 @@ class NeCTITrainer:
         print(f"Number of all parameters: {num_para:,}")
         print(f"Number of trainable parameters: {num_trainable_para:,}")
     
+    def _check_gradient_flow(self, step: int):
+        """Check if gradients are flowing properly"""
+        total_norm = 0.0
+        num_params_with_grad = 0
+        num_params_without_grad = 0
+        
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                if param.grad is not None:
+                    param_norm = param.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    num_params_with_grad += 1
+                else:
+                    num_params_without_grad += 1
+        
+        total_norm = total_norm ** 0.5
+        
+        if step % 50 == 0:  # Log every 50 steps
+            print(f"  [Step {step}] Gradient norm: {total_norm:.4f}, Params with grad: {num_params_with_grad}, without: {num_params_without_grad}")
+            
+        return total_norm
+    
     def _configure_device(self):
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -215,11 +269,12 @@ class NeCTITrainer:
         else:
             raise NotImplementedError(f"Optimizer {optimizer_type} not implemented")
         
+        # Use calculated total_steps and warmup_steps instead of args values
         lr_scheduler = get_lr_scheduler(
             name=lr_scheduler_type,
             optimizer=optimizer,
-            num_warmup_steps=self.args.warmup_steps,
-            num_training_steps=self.steps,
+            num_warmup_steps=self.warmup_steps,
+            num_training_steps=self.total_steps,
             num_cycles=self.args.num_cycles if hasattr(self.args, 'num_cycles') else None
         )
         
@@ -257,6 +312,13 @@ class NeCTITrainer:
                 
                 self.optimizer.zero_grad()
                 loss.backward()
+                
+                # Check gradient flow for first epoch to detect issues early
+                if epoch == 1 and train_steps % 50 == 0:
+                    grad_norm = self._check_gradient_flow(train_steps)
+                    if grad_norm == 0:
+                        print(f"  WARNING: Zero gradient norm detected at step {train_steps}!")
+                
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
                 self.optimizer.step()
                 self.lr_scheduler.step()
@@ -265,18 +327,41 @@ class NeCTITrainer:
                 train_steps += 1
                 global_step += 1
                 
-                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+                # Update progress bar with loss and learning rate
+                current_lr_bert = self.optimizer.param_groups[0]['lr']
+                current_lr_other = self.optimizer.param_groups[1]['lr']
                 
+                # Prepare postfix dict with main metrics
+                postfix_dict = {
+                    'loss': f'{loss.item():.4f}',
+                    'lr_bert': f'{current_lr_bert:.2e}',
+                    'lr_other': f'{current_lr_other:.2e}'
+                }
+                
+                # Add separate loss components if using contrastive learning
+                if hasattr(self.model, 'last_losses') and self.model.last_losses:
+                    postfix_dict['diff'] = f"{self.model.last_losses['diffusion']:.4f}"
+                    postfix_dict['cont'] = f"{self.model.last_losses['contrastive']:.4f}"
+                
+                pbar.set_postfix(postfix_dict)
+                
+                # Log to wandb
                 if self.args.logger == 'wandb':
-                    wandb.log({
+                    log_dict = {
                         'train/loss': loss.item(),
-                        'train/lr_bert': self.optimizer.param_groups[0]['lr'],
-                        'train/lr_other': self.optimizer.param_groups[1]['lr'],
+                        'train/lr_bert': current_lr_bert,
+                        'train/lr_other': current_lr_other,
                         'global_step': global_step
-                    })
+                    }
+                    # Add separate loss components if available
+                    if hasattr(self.model, 'last_losses') and self.model.last_losses:
+                        log_dict['train/diffusion_loss'] = self.model.last_losses['diffusion']
+                        log_dict['train/contrastive_loss'] = self.model.last_losses['contrastive']
+                    wandb.log(log_dict)
             
             avg_train_loss = train_loss / train_steps
             print(f"Average training loss: {avg_train_loss:.4f}")
+            print(f"Learning rates - BERT: {self.optimizer.param_groups[0]['lr']:.2e}, Other: {self.optimizer.param_groups[1]['lr']:.2e}")
             
             # Evaluation on dev set
             print("\nEvaluating on dev set...")

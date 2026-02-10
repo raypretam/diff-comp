@@ -11,6 +11,8 @@ from transformers import AutoModel
 from .utils import decimal_to_bits, bits_to_decimal
 from data.cws.cws_dataset import LabelSet
 from .dit_discrete import DiT
+from .compound_encoder import CompoundEncoder, CompoundDecoder, extract_compound_masks_from_labels
+from .contrastive_loss import create_contrastive_loss
 
 __all__ = ["BitDit"]
 
@@ -89,7 +91,13 @@ class BitDit(nn.Module):
                  objective: str = 'pred_x0',
                  loss_type: str = 'l2',
                  add_lstm: bool = False,
-                 freeze_bert: bool = False):
+                 freeze_bert: bool = False,
+                 compound_aware: bool = False,
+                 compound_pooling: str = 'mean',
+                 label_set=None,
+                 use_contrastive: bool = False,
+                 contrastive_weight: float = 0.1,
+                 contrastive_config=None):
         super().__init__()
 
         self.device = torch.device(device)
@@ -101,6 +109,9 @@ class BitDit(nn.Module):
 
         # backbone: pretrained BERT or RoBERTA, name or path
         self.backbone = AutoModel.from_pretrained(backbone)
+        
+        # Get actual BERT dimension
+        self.bert_dim = self.backbone.config.hidden_size
 
         # build diffusion
         # 100
@@ -136,6 +147,39 @@ class BitDit(nn.Module):
 
         self.bits = torch.ceil(torch.log2(torch.tensor(num_labels))).long()
         self.loss_type = loss_type
+        self.compound_aware = compound_aware
+        self.label_set = label_set
+        
+        # Contrastive learning components
+        self.use_contrastive = use_contrastive
+        self.contrastive_weight = contrastive_weight
+        if use_contrastive:
+            if contrastive_config is None:
+                # Create default config object
+                from argparse import Namespace
+                contrastive_config = Namespace(
+                    contrastive_type='simple',
+                    contrastive_temp=0.07
+                )
+            self.contrastive_loss_fn = create_contrastive_loss(contrastive_config)
+            print(f"Contrastive learning enabled with weight={contrastive_weight}")
+        
+        # Compound-aware diffusion components
+        if compound_aware:
+            print(f"\n{'='*80}")
+            print("Initializing Compound-Aware Diffusion")
+            print(f"{'='*80}")
+            print(f"BERT dimension: {self.bert_dim}")
+            print(f"Target dimension (dim_model): {dim_model}")
+            print(f"Pooling method: {compound_pooling}")
+            self.compound_encoder = CompoundEncoder(self.bert_dim, output_dim=dim_model, pooling_method=compound_pooling)
+            self.compound_decoder = CompoundDecoder()
+            print("✓ Compound encoder and decoder initialized")
+            print(f"{'='*80}\n")
+        else:
+            self.compound_encoder = None
+            self.compound_decoder = None
+        
         self.model = DiT(in_channels=self.bits.item(),
                          hidden_size=dim_model,
                          num_steps=self.timesteps,
@@ -383,27 +427,118 @@ class BitDit(nn.Module):
             # gold and noised sequence labels
             bits_seq_labels = decimal_to_bits(seq_labels, self.bits)
             bits_seq_labels *= self.scale
-            noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
-
-            self_cond = None
-            if random() < 0.5:
-                with torch.no_grad():
-                    self_cond = self.model_predictions(noise_bits_seq_labels, ts, features, label_mask).pred_x_start
-                    self_cond.detach_()
-
-            pred = self.model(noise_bits_seq_labels, ts, features, label_mask, self_cond)
-
-            targets = bits_seq_labels
-            targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
-            if self.objective == 'pred_noise':
-                targets = noise
-            if self.loss_type == 'l2':
-                loss = F.mse_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
-            elif self.loss_type == 'l1':
-                loss = F.l1_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
+            
+            # Compound-aware training: operate at compound level
+            if self.compound_aware and self.label_set is not None:
+                try:
+                    # Extract compound masks from labels
+                    compound_masks = extract_compound_masks_from_labels(seq_labels, self.label_set)
+                    # compound_masks: [bsz, max_compounds, seq_len]
+                    
+                    # Pool token-level features into compound-level
+                    compound_features, compound_mask = self.compound_encoder(features, compound_masks)
+                    # compound_features: [bsz, max_compounds, dim]
+                    
+                    # Pool token-level labels: use mean of token labels within each compound
+                    bsz, max_compounds, seq_len = compound_masks.shape
+                    bits = self.bits.item()
+                    compound_labels = torch.zeros(bsz, max_compounds, bits, device=self.device)
+                    
+                    for b in range(bsz):
+                        for c in range(max_compounds):
+                            comp_mask = compound_masks[b, c].bool()
+                            if comp_mask.any():
+                                # Average token labels within compound
+                                compound_labels[b, c] = bits_seq_labels[b, comp_mask].mean(dim=0)
+                    
+                    # Run diffusion at compound level
+                    noise_compound_labels, ts, noise_comp = self.prepare_targets(compound_labels)
+                    
+                    # Self-conditioning at compound level
+                    self_cond = None
+                    if random() < 0.5:
+                        with torch.no_grad():
+                            self_cond = self.model_predictions(noise_compound_labels, ts, 
+                                                               compound_features, compound_mask).pred_x_start
+                            self_cond.detach_()
+                    
+                    # Predict at compound level
+                    pred_compound = self.model(noise_compound_labels, ts, compound_features, compound_mask, self_cond)
+                    
+                    # Broadcast compound predictions back to token level
+                    pred = self.compound_decoder(pred_compound, compound_masks)
+                    
+                    # Compute targets at token level
+                    targets = bits_seq_labels
+                    targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, bits)
+                    if self.objective == 'pred_noise':
+                        # For noise prediction, broadcast compound noise to tokens
+                        noise_tokens = self.compound_decoder(noise_comp, compound_masks)
+                        targets = noise_tokens
+                        
+                except Exception as e:
+                    print(f"Warning: Compound-aware processing failed ({e}). Falling back to token-level.")
+                    # Fall back to token-level on error
+                    noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
+                    self_cond = None
+                    if random() < 0.5:
+                        with torch.no_grad():
+                            self_cond = self.model_predictions(noise_bits_seq_labels, ts, features, label_mask).pred_x_start
+                            self_cond.detach_()
+                    pred = self.model(noise_bits_seq_labels, ts, features, label_mask, self_cond)
+                    targets = bits_seq_labels
+                    targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
+                    if self.objective == 'pred_noise':
+                        targets = noise
             else:
-                raise NotImplementedError
-            return loss
+                # Standard token-level training
+                noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
+
+                self_cond = None
+                if random() < 0.5:
+                    with torch.no_grad():
+                        self_cond = self.model_predictions(noise_bits_seq_labels, ts, features, label_mask).pred_x_start
+                        self_cond.detach_()
+
+                pred = self.model(noise_bits_seq_labels, ts, features, label_mask, self_cond)
+
+                targets = bits_seq_labels
+                targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
+                if self.objective == 'pred_noise':
+                    targets = noise
+            
+            # Select loss function
+            if self.loss_type == 'l2':
+                diffusion_loss = F.mse_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
+            elif self.loss_type == 'l1':
+                diffusion_loss = F.l1_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
+            else:
+                raise NotImplementedError(f"Loss type '{self.loss_type}' not implemented")
+            
+            # Add contrastive loss if enabled
+            if self.use_contrastive:
+                # Convert bit predictions back to continuous embeddings for contrastive learning
+                # pred: [bsz, seq_len, bits]
+                # We use the predicted bits as embeddings for contrastive learning
+                contrastive_loss = self.contrastive_loss_fn(
+                    embeddings=pred,  # Use bit predictions as embeddings
+                    labels=seq_labels,  # Original categorical labels
+                    mask=label_mask  # Attention mask
+                )
+                
+                # Combined loss
+                total_loss = diffusion_loss + self.contrastive_weight * contrastive_loss
+                
+                # Store losses for logging (accessible via model.last_losses)
+                self.last_losses = {
+                    'total': total_loss.item(),
+                    'diffusion': diffusion_loss.item(),
+                    'contrastive': contrastive_loss.item()
+                }
+                
+                return total_loss
+            else:
+                return diffusion_loss
 
     def prepare_targets(self, gold_seq_labels):
         """

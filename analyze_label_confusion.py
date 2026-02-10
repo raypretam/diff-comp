@@ -53,7 +53,7 @@ def analyze_compound_mismatches(predictions: List[Dict]) -> Dict:
     for sample_idx, pred in enumerate(predictions):
         true_labels = pred.get('true_labels', [])
         pred_labels = pred.get('predictions', [])
-        tokens = pred.get('merged_tokens', pred.get('tokens', []))
+        tokens = pred.get('original_tokens', pred.get('merged_tokens', pred.get('tokens', [])))
         
         if len(true_labels) != len(pred_labels):
             continue
@@ -160,8 +160,10 @@ def print_compound_report(compound_analysis: Dict):
         
         # Show a few examples
         for i, error in enumerate(errors[:3]):
-            print(f"  Example {i+1}: {error['tokens']}")
-            print(f"    Expected: {error['predicted'].replace('Comp_root', 'ROOT')}")
+            tokens = error.get('tokens', '[tokens unavailable]')
+            print(f"  Example {i+1}: {tokens}")
+            print(f"    True: {true_comp.replace('Comp_root', 'ROOT')}")
+            print(f"    Pred: {error['predicted'].replace('Comp_root', 'ROOT')}")
             print(f"    Pattern:  {error['error_pattern']}")
             # Show specific mismatches
             mismatches = [f"{t}→{p}" for t, p in error['details'] if t != p]
@@ -190,16 +192,16 @@ def main():
     compound_analysis = analyze_compound_mismatches(predictions)
     print_compound_report(compound_analysis)
     
-    print("\n" + "="*80)
-    print("KEY INSIGHTS:")
-    print("="*80)
-    print("1. Labels with low F1 in per-label metrics are causing exact_match failures")
-    print("2. Most common confusions show which fine-grain distinctions model struggles with")
-    print("3. Compound-level analysis shows if errors cluster in specific compound types")
-    print("\nRECOMMENDATIONS:")
-    print("- Focus training on low-F1 labels with increased weight")
-    print("- Review training data for confused label pairs")
-    print("- Consider: Class imbalance, label similarity, or insufficient training data")
+    # print("\n" + "="*80)
+    # print("KEY INSIGHTS:")
+    # print("="*80)
+    # print("1. Labels with low F1 in per-label metrics are causing exact_match failures")
+    # print("2. Most common confusions show which fine-grain distinctions model struggles with")
+    # print("3. Compound-level analysis shows if errors cluster in specific compound types")
+    # print("\nRECOMMENDATIONS:")
+    # print("- Focus training on low-F1 labels with increased weight")
+    # print("- Review training data for confused label pairs")
+    # print("- Consider: Class imbalance, label similarity, or insufficient training data")
 
 
 if __name__ == '__main__':

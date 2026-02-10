@@ -1,0 +1,373 @@
+Loading predictions from: /home/pretam-pg/DiffusionSL/inference_results/necti_finegrain_no_ctx/test_predictions.json
+Loaded 2940 samples
+
+
+================================================================================
+LABEL CONFUSION ANALYSIS
+================================================================================
+
+Most confused labels (True Label → Predicted Label):
+--------------------------------------------------------------------------------
+ 206 errors: K1              → T6             
+ 158 errors: T6              → K1             
+ 119 errors: Di              → T6             
+ 112 errors: T6              → Di             
+  91 errors: Bs6             → K1             
+  78 errors: Bs6             → T6             
+  77 errors: T7              → T6             
+  73 errors: T3              → T6             
+  58 errors: K7              → T6             
+  51 errors: Comp_root       → K1             
+  47 errors: U               → T6             
+  46 errors: K1              → Di             
+  46 errors: Ds              → Di             
+  45 errors: T6              → T3             
+  40 errors: T6              → Comp_root      
+  39 errors: K1              → Comp_root      
+  39 errors: Comp_root       → T6             
+  38 errors: K1              → Bs6            
+  37 errors: Di              → K1             
+  31 errors: T6              → U              
+
+--------------------------------------------------------------------------------
+Labels with most total errors (by true label):
+--------------------------------------------------------------------------------
+ 580 errors: T6
+ 446 errors: K1
+ 286 errors: Bs6
+ 246 errors: Di
+ 160 errors: T3
+ 156 errors: T7
+ 150 errors: Comp_root
+ 110 errors: K7
+  96 errors: U
+  78 errors: Bb
+  75 errors: Ds
+  63 errors: K6
+  63 errors: T5
+  39 errors: Bv
+  34 errors: T4
+
+================================================================================
+COMPOUND-LEVEL ERROR ANALYSIS
+================================================================================
+
+Perfect Compounds:   3756 (62.45%)
+Failed Compounds:    2258 (37.55%)
+Total Compounds:     6014
+
+--------------------------------------------------------------------------------
+Most common compound errors (True compound type):
+--------------------------------------------------------------------------------
+
+T6_Comp_root - 129 failures (avg 1.07 errors/instance)
+  Example 1:
+    Original:  गुडाका ईश सर्व भूत आशय स्थितः
+    Predicted: गुडाका/Di ईश/Di सर्व/K1 भूत/T6 आशय/T7 स्थितः/Comp_root
+    Expected:  गुडाका/T6 ईश/Comp_root सर्व/K1 भूत/T6 आशय/T7 स्थितः/Comp_root
+    Pattern:   ✗✗
+    Mismatches: T6→Di, Comp_root→Di
+  Example 2:
+    Original:  प्रजा वल्लभः महात् तेजाः जित न शेष शत्रुः मित्र बन्धु सम्बन्धिभिः महर्षि कल्पः राजन् ऋर्षिः
+    Predicted: प्रजा/T6 वल्लभः/Comp_root महात्/Bs6 तेजाः/Comp_root जित/Bs3 न/Tn शेष/K1 शत्रुः/Comp_root मित्र/Di बन्धु/T6 सम्बन्धिभिः/Comp_root महर्षि/K6 कल्पः/Comp_root राजन्/T6 ऋर्षिः/Comp_root
+    Expected:  प्रजा/T6 वल्लभः/Comp_root महात्/K1 तेजाः/Comp_root जित/Bs3 न/Tn शेष/K1 शत्रुः/Comp_root मित्र/Di बन्धु/Di सम्बन्धिभिः/Comp_root महर्षि/T6 कल्पः/Comp_root राजन्/K1 ऋर्षिः/Comp_root
+    Pattern:   ✗✓
+    Mismatches: T6→K6
+  Example 3:
+    Original:  शास्त्र अर्थी दिक् विजय यात्रायै
+    Predicted: शास्त्र/T2 अर्थी/Comp_root दिक्/T7 विजय/T6 यात्रायै/Comp_root
+    Expected:  शास्त्र/T6 अर्थी/Comp_root दिक्/T6 विजय/T6 यात्रायै/Comp_root
+    Pattern:   ✗✓
+    Mismatches: T6→T2
+
+T6_T6_Comp_root - 97 failures (avg 1.09 errors/instance)
+  Example 1:
+    Original:  प्रथम प्रवासिनः मातृ स्नेह लोभात् मातृ समां
+    Predicted: प्रथम/K1 प्रवासिनः/Comp_root मातृ/T6 स्नेह/Di लोभात्/Comp_root मातृ/T6 समां/Comp_root
+    Expected:  प्रथम/K1 प्रवासिनः/Comp_root मातृ/T6 स्नेह/T6 लोभात्/Comp_root मातृ/T3 समां/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: T6→Di
+  Example 2:
+    Original:  शास्त्र अर्थी दिक् विजय यात्रायै
+    Predicted: शास्त्र/T2 अर्थी/Comp_root दिक्/T7 विजय/T6 यात्रायै/Comp_root
+    Expected:  शास्त्र/T6 अर्थी/Comp_root दिक्/T6 विजय/T6 यात्रायै/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: T6→T7
+  Example 3:
+    Original:  पाद अभ्यङ्ग निषेवणात्
+    Predicted: पाद/T7 अभ्यङ्ग/T6 निषेवणात्/Comp_root
+    Expected:  पाद/T6 अभ्यङ्ग/T6 निषेवणात्/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: T6→T7
+
+K1_Comp_root - 89 failures (avg 1.02 errors/instance)
+  Example 1:
+    Original:  अन्न काले शालि तण्डुलानाम् अ स्नेह लवणाम् अल्प स्नेह लवणां
+    Predicted: अन्न/T6 काले/Comp_root शालि/Di तण्डुलानाम्/Comp_root अ/Tn स्नेह/Di लवणाम्/Comp_root अल्प/Bs6 स्नेह/Di लवणां/Comp_root
+    Expected:  अन्न/T6 काले/Comp_root शालि/K1 तण्डुलानाम्/Comp_root अ/Bsmn स्नेह/Di लवणाम्/Comp_root अल्प/Bs7 स्नेह/Di लवणां/Comp_root
+    Pattern:   ✗✓
+    Mismatches: K1→Di
+  Example 2:
+    Original:  शाखा भेद प्रचार वशात् न अन्तः न पारः न उपरतः नित्य प्रततः
+    Predicted: शाखा/T6 भेद/T6 प्रचार/T6 वशात्/Comp_root न/Tn अन्तः/Comp_root न/Tn पारः/Comp_root न/Tn उपरतः/Comp_root नित्य/T3 प्रततः/Comp_root
+    Expected:  शाखा/T6 भेद/T6 प्रचार/T6 वशात्/Comp_root न/Bs6 अन्तः/Comp_root न/Bs6 पारः/Comp_root न/Tn उपरतः/Comp_root नित्य/K1 प्रततः/Comp_root
+    Pattern:   ✗✓
+    Mismatches: K1→T3
+  Example 3:
+    Original:  मह उग्रा त्रय दश द्वीपवती
+    Predicted: मह/K1 उग्रा/T6 त्रय/Km दश/K1 द्वीपवती/Comp_root
+    Expected:  मह/K1 उग्रा/Comp_root त्रय/Bs6 दश/Bs6 द्वीपवती/Comp_root
+    Pattern:   ✓✗
+    Mismatches: Comp_root→T6
+
+Bs6_Comp_root - 66 failures (avg 1.12 errors/instance)
+  Example 1:
+    Original:  त्रि दोष जे हृद् रोगे दुर् आत्मा
+    Predicted: त्रि/Tdt दोष/U जे/Comp_root हृद्/T6 रोगे/Comp_root दुर्/BvU आत्मा/Comp_root
+    Expected:  त्रि/U दोष/U जे/Comp_root हृद्/T6 रोगे/Comp_root दुर्/Bs6 आत्मा/Comp_root
+    Pattern:   ✗✓
+    Mismatches: Bs6→BvU
+  Example 2:
+    Original:  शाखा भेद प्रचार वशात् न अन्तः न पारः न उपरतः नित्य प्रततः
+    Predicted: शाखा/T6 भेद/T6 प्रचार/T6 वशात्/Comp_root न/Tn अन्तः/Comp_root न/Tn पारः/Comp_root न/Tn उपरतः/Comp_root नित्य/T3 प्रततः/Comp_root
+    Expected:  शाखा/T6 भेद/T6 प्रचार/T6 वशात्/Comp_root न/Bs6 अन्तः/Comp_root न/Bs6 पारः/Comp_root न/Tn उपरतः/Comp_root नित्य/K1 प्रततः/Comp_root
+    Pattern:   ✗✓
+    Mismatches: Bs6→Tn
+  Example 3:
+    Original:  शाखा भेद प्रचार वशात् न अन्तः न पारः न उपरतः नित्य प्रततः
+    Predicted: शाखा/T6 भेद/T6 प्रचार/T6 वशात्/Comp_root न/Tn अन्तः/Comp_root न/Tn पारः/Comp_root न/Tn उपरतः/Comp_root नित्य/T3 प्रततः/Comp_root
+    Expected:  शाखा/T6 भेद/T6 प्रचार/T6 वशात्/Comp_root न/Bs6 अन्तः/Comp_root न/Bs6 पारः/Comp_root न/Tn उपरतः/Comp_root नित्य/K1 प्रततः/Comp_root
+    Pattern:   ✗✓
+    Mismatches: Bs6→Tn
+
+K1_T6_Comp_root - 49 failures (avg 1.18 errors/instance)
+  Example 1:
+    Original:  चित्त भूमौ समान प्रत्यय आवृत्तिः
+    Predicted: चित्त/T6 भूमौ/Comp_root समान/Bs6 प्रत्यय/T6 आवृत्तिः/Comp_root
+    Expected:  चित्त/K6 भूमौ/Comp_root समान/K1 प्रत्यय/T6 आवृत्तिः/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: K1→Bs6
+  Example 2:
+    Original:  शोभा यात्रा रूपेण अनु सरणम्
+    Predicted: शोभा/T6 यात्रा/T6 रूपेण/Comp_root अनु/Tp सरणम्/Comp_root
+    Expected:  शोभा/K1 यात्रा/T6 रूपेण/Comp_root अनु/Tp सरणम्/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: K1→T6
+  Example 3:
+    Original:  विषम रुजा आर्तः
+    Predicted: विषम/K1 रुजा/T3 आर्तः/Comp_root
+    Expected:  विषम/K1 रुजा/T6 आर्तः/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: T6→T3
+
+T7_Comp_root - 39 failures (avg 1.05 errors/instance)
+  Example 1:
+    Original:  बार्हद्रथ अपहृत विषय कीर्ति भोगः पुरुष उत्तमः
+    Predicted: बार्हद्रथ/T3 अपहृत/K1 विषय/Comp_root कीर्ति/T6 भोगः/Comp_root पुरुष/T6 उत्तमः/Comp_root
+    Expected:  बार्हद्रथ/T3 अपहृत/Bs6 विषय/Di कीर्ति/Di भोगः/Comp_root पुरुष/T7 उत्तमः/Comp_root
+    Pattern:   ✗✓
+    Mismatches: T7→T6
+  Example 2:
+    Original:  जन्म नक्षत्र क्रिया व्यापृतस्य महत् राजस्य अकाल निवेदनं
+    Predicted: जन्म/K7 नक्षत्र/T6 क्रिया/T3 व्यापृतस्य/Comp_root महत्/K1 राजस्य/Comp_root अकाल/T6 निवेदनं/Comp_root
+    Expected:  जन्म/T6 नक्षत्र/T6 क्रिया/T7 व्यापृतस्य/Comp_root महत्/K1 राजस्य/Comp_root अकाल/T7 निवेदनं/Comp_root
+    Pattern:   ✗✓
+    Mismatches: T7→T6
+  Example 3:
+    Original:  ग्राम पक्ष पातम् पूर्व उक्तम्
+    Predicted: ग्राम/T6 पक्ष/T6 पातम्/Comp_root पूर्व/Tn उक्तम्/Comp_root
+    Expected:  ग्राम/T6 पक्ष/T7 पातम्/Comp_root पूर्व/T7 उक्तम्/Comp_root
+    Pattern:   ✗✓
+    Mismatches: T7→Tn
+
+U_Comp_root - 36 failures (avg 1.06 errors/instance)
+  Example 1:
+    Original:  सामान्य शाकानाम् उप जं जीवन उपयोग कार्यं
+    Predicted: सामान्य/K1 शाकानाम्/Comp_root उप/Tp जं/Comp_root जीवन/T6 उपयोग/T6 कार्यं/Comp_root
+    Expected:  सामान्य/K1 शाकानाम्/Comp_root उप/U जं/Comp_root जीवन/T6 उपयोग/K1 कार्यं/Comp_root
+    Pattern:   ✗✓
+    Mismatches: U→Tp
+  Example 2:
+    Original:  चातुर्मास्य याजिनः कर्मन् फल विशेषस्य चातुर्मासस्य फलस्य
+    Predicted: चातुर्मास्य/K1 याजिनः/Comp_root कर्मन्/T6 फल/T6 विशेषस्य/Comp_root चातुर्मासस्य/K7 फलस्य/Comp_root
+    Expected:  चातुर्मास्य/U याजिनः/Comp_root कर्मन्/T6 फल/T6 विशेषस्य/Comp_root चातुर्मासस्य/K1 फलस्य/Comp_root
+    Pattern:   ✗✓
+    Mismatches: U→K1
+  Example 3:
+    Original:  घटकत्व व्यापकत्व वाचकत्व आदीनाम् सप्तमी अर्थ ता वर्णनम् अनुशासन अनुरोधि
+    Predicted: घटकत्व/Di व्यापकत्व/Di वाचकत्व/Bs6 आदीनाम्/Comp_root सप्तमी/T6 अर्थ/T6 ता/T6 वर्णनम्/Comp_root अनुशासन/T6 अनुरोधि/Comp_root
+    Expected:  घटकत्व/Di व्यापकत्व/Di वाचकत्व/Bs6 आदीनाम्/Comp_root सप्तमी/T6 अर्थ/T6 ता/T6 वर्णनम्/Comp_root अनुशासन/U अनुरोधि/Comp_root
+    Pattern:   ✗✓
+    Mismatches: U→T6
+
+T6_T3_Comp_root - 36 failures (avg 1.11 errors/instance)
+  Example 1:
+    Original:  सुगन्धि धूम परिमल
+    Predicted: सुगन्धि/T6 धूम/T6 परिमल/Comp_root
+    Expected:  सुगन्धि/T6 धूम/T3 परिमल/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: T3→T6
+  Example 2:
+    Original:  स्व अर्थ प्रेरिताः वाक् दानम्
+    Predicted: स्व/T4 अर्थ/T3 प्रेरिताः/Comp_root वाक्/T6 दानम्/Comp_root
+    Expected:  स्व/T6 अर्थ/T3 प्रेरिताः/Comp_root वाक्/T6 दानम्/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: T6→T4
+  Example 3:
+    Original:  सर्व अनुभव सिद्ध तद् अभावस्य न शक्य
+    Predicted: सर्व/K1 अनुभव/T3 सिद्ध/Comp_root तद्/T6 अभावस्य/Comp_root न/Tn शक्य/Comp_root
+    Expected:  सर्व/T6 अनुभव/T3 सिद्ध/Comp_root तद्/T6 अभावस्य/Comp_root न/Tn शक्य/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: T6→K1
+
+T3_Comp_root - 32 failures (avg 1.00 errors/instance)
+  Example 1:
+    Original:  प्रथम प्रवासिनः मातृ स्नेह लोभात् मातृ समां
+    Predicted: प्रथम/K1 प्रवासिनः/Comp_root मातृ/T6 स्नेह/Di लोभात्/Comp_root मातृ/T6 समां/Comp_root
+    Expected:  प्रथम/K1 प्रवासिनः/Comp_root मातृ/T6 स्नेह/T6 लोभात्/Comp_root मातृ/T3 समां/Comp_root
+    Pattern:   ✗✓
+    Mismatches: T3→T6
+  Example 2:
+    Original:  प्रकारता निरूपिता विशेष्यता भिन्न विषयता वस्तु मात्रे
+    Predicted: प्रकारता/T3 निरूपिता/K1 विशेष्यता/T5 भिन्न/K1 विषयता/Comp_root वस्तु/Bv मात्रे/Comp_root
+    Expected:  प्रकारता/T3 निरूपिता/Comp_root विशेष्यता/T5 भिन्न/K1 विषयता/Comp_root वस्तु/Bv मात्रे/Comp_root
+    Pattern:   ✓✗
+    Mismatches: Comp_root→K1
+  Example 3:
+    Original:  धृत कृत्रिम शिखि पक्षः दर्प आध्मातः काक मण्डलीम्
+    Predicted: धृत/Bs6 कृत्रिम/K1 शिखि/T6 पक्षः/Comp_root दर्प/T6 आध्मातः/Comp_root काक/T6 मण्डलीम्/Comp_root
+    Expected:  धृत/Ds कृत्रिम/Bs3 शिखि/Bsu पक्षः/Comp_root दर्प/T3 आध्मातः/Comp_root काक/T6 मण्डलीम्/Comp_root
+    Pattern:   ✗✓
+    Mismatches: T3→T6
+
+Di_T6_Comp_root - 28 failures (avg 1.14 errors/instance)
+  Example 1:
+    Original:  वर्ण उपचय वर्धनाः
+    Predicted: वर्ण/T6 उपचय/Di वर्धनाः/Comp_root
+    Expected:  वर्ण/Di उपचय/T6 वर्धनाः/Comp_root
+    Pattern:   ✗✗✓
+    Mismatches: Di→T6, T6→Di
+  Example 2:
+    Original:  वात घ्नः कफ पित्त कृत्
+    Predicted: वात/U घ्नः/Comp_root कफ/Di पित्त/U कृत्/Comp_root
+    Expected:  वात/U घ्नः/Comp_root कफ/Di पित्त/T6 कृत्/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: T6→U
+  Example 3:
+    Original:  देश काल आदि अपेक्षया दृष्ट अदृष्ट अर्थानाम्
+    Predicted: देश/Di काल/Bs6 आदि/T6 अपेक्षया/Comp_root दृष्ट/Di अदृष्ट/K1 अर्थानाम्/Comp_root
+    Expected:  देश/Di काल/Bs6 आदि/T6 अपेक्षया/Comp_root दृष्ट/Di अदृष्ट/T6 अर्थानाम्/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: T6→K1
+
+T6_K1_Comp_root - 28 failures (avg 1.11 errors/instance)
+  Example 1:
+    Original:  वचन सम कालम्
+    Predicted: वचन/Bb सम/Bb कालम्/Comp_root
+    Expected:  वचन/T6 सम/K1 कालम्/Comp_root
+    Pattern:   ✗✗✓
+    Mismatches: T6→Bb, K1→Bb
+  Example 2:
+    Original:  सामान्य शाकानाम् उप जं जीवन उपयोग कार्यं
+    Predicted: सामान्य/K1 शाकानाम्/Comp_root उप/Tp जं/Comp_root जीवन/T6 उपयोग/T6 कार्यं/Comp_root
+    Expected:  सामान्य/K1 शाकानाम्/Comp_root उप/U जं/Comp_root जीवन/T6 उपयोग/K1 कार्यं/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: K1→T6
+  Example 3:
+    Original:  साम गान पवित्रम्
+    Predicted: साम/T6 गान/T7 पवित्रम्/Comp_root
+    Expected:  साम/T6 गान/K1 पवित्रम्/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: K1→T7
+
+T6_T7_Comp_root - 26 failures (avg 1.12 errors/instance)
+  Example 1:
+    Original:  धौर्त्य कला प्रवीणाः
+    Predicted: धौर्त्य/Di कला/T6 प्रवीणाः/Comp_root
+    Expected:  धौर्त्य/T6 कला/T7 प्रवीणाः/Comp_root
+    Pattern:   ✗✗✓
+    Mismatches: T6→Di, T7→T6
+  Example 2:
+    Original:  कल्पना लोक विचरणं
+    Predicted: कल्पना/T6 लोक/T6 विचरणं/Comp_root
+    Expected:  कल्पना/T6 लोक/T7 विचरणं/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: T7→T6
+  Example 3:
+    Original:  इन्द्र जाल निपुणा स्व गृहम्
+    Predicted: इन्द्र/T6 जाल/T3 निपुणा/Comp_root स्व/T6 गृहम्/Comp_root
+    Expected:  इन्द्र/T6 जाल/T7 निपुणा/Comp_root स्व/T6 गृहम्/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: T7→T3
+
+Di_Bs6_Comp_root - 25 failures (avg 1.32 errors/instance)
+  Example 1:
+    Original:  उन्मत्त च्छन्न वेषस्य
+    Predicted: उन्मत्त/T3 च्छन्न/Bs7 वेषस्य/Comp_root
+    Expected:  उन्मत्त/Di च्छन्न/Bs6 वेषस्य/Comp_root
+    Pattern:   ✗✗✓
+    Mismatches: Di→T3, Bs6→Bs7
+  Example 2:
+    Original:  शास्त्र विधिम् कर्तव्य अकर्तव्य ज्ञान कारणम् विधि प्रतिषेध आख्यम् काम प्रयुक्तः
+    Predicted: शास्त्र/T6 विधिम्/Comp_root कर्तव्य/Di अकर्तव्य/T6 ज्ञान/T6 कारणम्/Comp_root विधि/T6 प्रतिषेध/Bs6 आख्यम्/Comp_root काम/T3 प्रयुक्तः/Comp_root
+    Expected:  शास्त्र/T6 विधिम्/Comp_root कर्तव्य/Di अकर्तव्य/T6 ज्ञान/T6 कारणम्/Comp_root विधि/Di प्रतिषेध/Bs6 आख्यम्/Comp_root काम/T3 प्रयुक्तः/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: Di→T6
+  Example 3:
+    Original:  अर्पित मनः बुद्धिः न संशयः
+    Predicted: अर्पित/Bb मनः/Di बुद्धिः/Comp_root न/Tn संशयः/Comp_root
+    Expected:  अर्पित/Di मनः/Bs6 बुद्धिः/Comp_root न/Tn संशयः/Comp_root
+    Pattern:   ✗✗✓
+    Mismatches: Di→Bb, Bs6→Di
+
+K1_Bs6_Comp_root - 21 failures (avg 1.33 errors/instance)
+  Example 1:
+    Original:  महत् भूत विशाखः
+    Predicted: महत्/K1 भूत/K1 विशाखः/Comp_root
+    Expected:  महत्/K1 भूत/Bs6 विशाखः/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: Bs6→K1
+  Example 2:
+    Original:  सम विभक्त अङ्गः
+    Predicted: सम/Bb विभक्त/Bs6 अङ्गः/Comp_root
+    Expected:  सम/K1 विभक्त/Bs6 अङ्गः/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: K1→Bb
+  Example 3:
+    Original:  आत्मन् विदः निवृत्त मिथ्या ज्ञानस्य विपर्यय ज्ञान मूलः कर्मन् योगः
+    Predicted: आत्मन्/U विदः/Comp_root निवृत्त/K1 मिथ्या/K1 ज्ञानस्य/Comp_root विपर्यय/K1 ज्ञान/T6 मूलः/Comp_root कर्मन्/K6 योगः/Comp_root
+    Expected:  आत्मन्/U विदः/Comp_root निवृत्त/Bs6 मिथ्या/K1 ज्ञानस्य/Comp_root विपर्यय/K1 ज्ञान/Bs6 मूलः/Comp_root कर्मन्/K6 योगः/Comp_root
+    Pattern:   ✓✗✓
+    Mismatches: Bs6→T6
+
+K7_T6_Comp_root - 20 failures (avg 1.10 errors/instance)
+  Example 1:
+    Original:  अभिषेक मण्डपं दण्डक अरण्य गमनं
+    Predicted: अभिषेक/T6 मण्डपं/Comp_root दण्डक/T6 अरण्य/T6 गमनं/Comp_root
+    Expected:  अभिषेक/T6 मण्डपं/Comp_root दण्डक/K7 अरण्य/T6 गमनं/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: K7→T6
+  Example 2:
+    Original:  वट वृक्ष च्छायायां
+    Predicted: वट/T6 वृक्ष/T6 च्छायायां/Comp_root
+    Expected:  वट/K7 वृक्ष/T6 च्छायायां/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: K7→T6
+  Example 3:
+    Original:  मुख्य जघन्य विभागः लिङ्ग अधिकरण विरोधः
+    Predicted: मुख्य/Di जघन्य/K7 विभागः/Comp_root लिङ्ग/T6 अधिकरण/T6 विरोधः/Comp_root
+    Expected:  मुख्य/Di जघन्य/K7 विभागः/Comp_root लिङ्ग/K7 अधिकरण/T6 विरोधः/Comp_root
+    Pattern:   ✗✓✓
+    Mismatches: K7→T6
+
+================================================================================
+KEY INSIGHTS:
+================================================================================
+1. Labels with low F1 in per-label metrics are causing exact_match failures
+2. Most common confusions show which fine-grain distinctions model struggles with
+3. Compound-level analysis shows if errors cluster in specific compound types
+
+RECOMMENDATIONS:
+- Focus training on low-F1 labels with increased weight
+- Review training data for confused label pairs
+- Consider: Class imbalance, label similarity, or insufficient training data
