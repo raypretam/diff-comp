@@ -283,93 +283,80 @@ class NeCTITrainer:
     def decode_relative_to_spans(self, token_ids: List[int], relative_tags: List[str]) -> List[Tuple[int, int, str]]:
         """
         Decodes Relative Tags (e.g. '+1:Tatpurusha') into Span Tuples (start, end, label).
-        
-        Logic:
-        1. Parse tags to build a Dependency Tree.
-        2. Identify compound units (subtrees).
-        3. Extract span boundaries and semantic types for each subtree.
+        Includes cycle detection to prevent recursion errors.
         """
         # 1. Build Adjacency List (Head -> Children)
-        # -------------------------------------------
         children = {tid: [] for tid in token_ids}
-        token_id_map = {i: tid for i, tid in enumerate(token_ids)}
-        
-        # Store relations for type determination
-        # Map: child_id -> relation_label (e.g., 'Tatpurusha')
         node_relations = {} 
         
         for i, tag in enumerate(relative_tags):
+            if i >= len(token_ids): break
             current_id = token_ids[i]
             
-            # Parse Tag
-            if tag == "ROOT:root" or tag == "ROOT:Comp_root":
-                # This is a root of a tree/subtree
+            if tag in ["ROOT:root", "ROOT:Comp_root"]:
                 node_relations[current_id] = "Comp_root"
                 continue
-                
-            if ":" not in tag: 
-                continue # Skip garbage predictions
+            
+            if ":" not in tag: continue 
                 
             try:
                 dist_str, rel = tag.split(":", 1)
                 dist = int(dist_str)
-                head_idx = i + 1 + dist # 1-based index calculation
+                head_list_idx = i + dist
                 
-                # Map index back to token ID if necessary, or just use indices
-                # Here assuming token_ids are sequential 1..N
-                if 0 <= (i + dist) < len(token_ids):
-                    head_id = token_ids[i + dist]
+                if 0 <= head_list_idx < len(token_ids):
+                    head_id = token_ids[head_list_idx]
+                    
+                    # Prevent immediate self-loops
+                    if head_id == current_id:
+                        continue
+                        
                     children[head_id].append(current_id)
                     node_relations[current_id] = rel
             except ValueError:
                 continue
 
-        # 2. Extract Spans from Subtrees
-        # ------------------------------
+        # 2. Extract Spans (Cycle-Safe)
         spans = []
-        
-        # Memoization for subtree ranges
-        subtree_ranges = {} # node_id -> (min_idx, max_idx)
+        subtree_ranges = {} 
 
-        def get_subtree_range(node_id):
-            if node_id in subtree_ranges:
+        def get_subtree_range(node_id, current_path):
+            # If already computed, return it
+            if node_id in subtree_ranges: 
                 return subtree_ranges[node_id]
+            
+            # CYCLE DETECTION: If we see a node currently in our recursion stack, stop.
+            if node_id in current_path:
+                return (node_id, node_id)
+            
+            # Add to current path
+            current_path.add(node_id)
             
             indices = [node_id]
             for child in children[node_id]:
-                c_min, c_max = get_subtree_range(child)
+                # Recursive call with path tracking
+                c_min, c_max = get_subtree_range(child, current_path)
                 indices.extend([c_min, c_max])
+            
+            # Remove from path before returning (backtracking)
+            current_path.remove(node_id)
             
             res = (min(indices), max(indices))
             subtree_ranges[node_id] = res
             return res
 
-        # Iterate over all nodes to find valid compound spans
-        # In dependency trees, every head (that has children with compound relations) formulates a span
         for head_id in token_ids:
             kids = children[head_id]
-            if not kids:
-                continue
-                
-            # Check if this subtree constitutes a valid compound
-            # Collect relations of direct children to determine Compound Type
+            if not kids: continue
+            
+            # Collect relations of direct children
             child_rels = [node_relations.get(k, '') for k in kids]
             valid_rels = [r for r in child_rels if r not in ['No_rel', 'root', 'Comp_root', '']]
             
             if valid_rels:
-                # Calculate Span Coverage
-                s_min, s_max = get_subtree_range(head_id)
-                
-                # Determine Label (Majority vote or specific precedence)
-                # For NeCTI, usually the child's relation defines the compound type (e.g., Tatpurusha)
-                # If multiple different relations exist, we might output multiple spans or a combined label
-                # Here we take the first valid relation (simplified for standard DepNeCTI)
-                primary_label = valid_rels[0] 
-                
-                # Append (start, end, label)
-                # Note: SpanBasedEvaluator usually expects 0-indexed or 1-indexed. 
-                # Adjust 's_min' and 's_max' to match your evaluator's expectation.
-                # Assuming evaluator matches the token_ids provided (1-based):
+                # Start traversal with an empty path set
+                s_min, s_max = get_subtree_range(head_id, set())
+                primary_label = valid_rels[0]
                 spans.append((s_min, s_max, primary_label))
 
         return spans
