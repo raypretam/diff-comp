@@ -53,16 +53,43 @@ class NeCTILabelSet:
         print(f"Labels: {self._labelset}")
     
     def _extract_labels_from_file(self, filepath: str) -> set:
-        """Extract unique compound type labels from CoNLL-U format file"""
+        """Extract RELATIVE positional labels (e.g., '+1:Tatpurusha')"""
         labels = set()
         with open(filepath, 'r', encoding='utf-8') as f:
+            sentences = []
+            current_sent = []
             for line in f:
                 line = line.strip()
-                if line and not line.startswith('#'):
+                if not line:
+                    if current_sent:
+                        # Process the buffered sentence to get relative labels
+                        for item in current_sent:
+                            idx = item['idx']
+                            head = item['head']
+                            rel = item['rel']
+                            
+                            # Logic for Relative Encoding
+                            if rel == 'Comp_root': # or head == 0
+                                label = "ROOT:Comp_root"
+                            elif head == 0: # Root of sentence
+                                label = "ROOT:root"
+                            else:
+                                dist = head - idx
+                                # Optional: Cap distance to avoid sparse labels (e.g., >5 becomes +Far)
+                                # if dist > 5: dist = "Far"
+                                # elif dist < -5: dist = "NegFar"
+                                label = f"{dist}:{rel}"
+                                
+                            labels.add(label)
+                        current_sent = []
+                elif not line.startswith('#'):
                     parts = line.split('\t')
                     if len(parts) >= 8:
-                        relation = parts[7]  # Eighth column is the relation/compound type
-                        labels.add(relation)
+                        current_sent.append({
+                            'idx': int(parts[0]), 
+                            'head': int(parts[6]), 
+                            'rel': parts[7]
+                        })
         return labels
     
     def label2id(self, label: str) -> int:
@@ -99,7 +126,7 @@ class NeCTIDataset(Dataset):
         self.label_set = label_set
         self.mode = mode
         self.use_context = use_context
-        
+        self.granularity = label_set.granularity
         # Construct file path
         context_dir = 'With Context' if use_context else 'Without Context'
         filename = f"{label_set.granularity}_{mode}_san"
@@ -162,15 +189,32 @@ class NeCTIDataset(Dataset):
             return None
         
         tokens = [item['token'] for item in sentence_data]
-        # Labels are the relation types (compound types to predict)
-        relation_labels = [item['relation'] for item in sentence_data]
+    # --- NEW LABEL GENERATION LOGIC ---
+        encoded_labels = []
+        for item in sentence_data:
+            idx = item['idx']
+            head = item['head_idx']
+            rel = item['relation']
+            
+            if rel == 'Comp_root':
+                label = "ROOT:Comp_root"
+            elif head == 0:
+                label = "ROOT:root"
+            else:
+                # Calculate distance: Head Index - Current Index
+                # Example: "washing(1) machine(2)" -> washing head is 2. Dist = 2-1 = +1
+                dist = head - idx
+                label = f"{dist}:{rel}"
+                
+            encoded_labels.append(label)
+        # ----------------------------------
         
         # Extract compound spans and types
         compounds = self._extract_compounds(sentence_data)
         
         return {
             'tokens': tokens,
-            'relation_labels': relation_labels,
+            'relation_labels': encoded_labels,
             'compounds': compounds
         }
     

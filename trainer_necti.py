@@ -16,7 +16,7 @@ from tqdm import tqdm
 
 from prettytable import PrettyTable
 from utils import get_lr_scheduler
-from typing import Dict, List
+from typing import Dict, List, Tuple
 import numpy as np
 import json
 
@@ -277,8 +277,102 @@ class NeCTITrainer:
             num_training_steps=self.total_steps,
             num_cycles=self.args.num_cycles if hasattr(self.args, 'num_cycles') else None
         )
-        
+
         return optimizer, lr_scheduler
+
+    def decode_relative_to_spans(self, token_ids: List[int], relative_tags: List[str]) -> List[Tuple[int, int, str]]:
+        """
+        Decodes Relative Tags (e.g. '+1:Tatpurusha') into Span Tuples (start, end, label).
+        
+        Logic:
+        1. Parse tags to build a Dependency Tree.
+        2. Identify compound units (subtrees).
+        3. Extract span boundaries and semantic types for each subtree.
+        """
+        # 1. Build Adjacency List (Head -> Children)
+        # -------------------------------------------
+        children = {tid: [] for tid in token_ids}
+        token_id_map = {i: tid for i, tid in enumerate(token_ids)}
+        
+        # Store relations for type determination
+        # Map: child_id -> relation_label (e.g., 'Tatpurusha')
+        node_relations = {} 
+        
+        for i, tag in enumerate(relative_tags):
+            current_id = token_ids[i]
+            
+            # Parse Tag
+            if tag == "ROOT:root" or tag == "ROOT:Comp_root":
+                # This is a root of a tree/subtree
+                node_relations[current_id] = "Comp_root"
+                continue
+                
+            if ":" not in tag: 
+                continue # Skip garbage predictions
+                
+            try:
+                dist_str, rel = tag.split(":", 1)
+                dist = int(dist_str)
+                head_idx = i + 1 + dist # 1-based index calculation
+                
+                # Map index back to token ID if necessary, or just use indices
+                # Here assuming token_ids are sequential 1..N
+                if 0 <= (i + dist) < len(token_ids):
+                    head_id = token_ids[i + dist]
+                    children[head_id].append(current_id)
+                    node_relations[current_id] = rel
+            except ValueError:
+                continue
+
+        # 2. Extract Spans from Subtrees
+        # ------------------------------
+        spans = []
+        
+        # Memoization for subtree ranges
+        subtree_ranges = {} # node_id -> (min_idx, max_idx)
+
+        def get_subtree_range(node_id):
+            if node_id in subtree_ranges:
+                return subtree_ranges[node_id]
+            
+            indices = [node_id]
+            for child in children[node_id]:
+                c_min, c_max = get_subtree_range(child)
+                indices.extend([c_min, c_max])
+            
+            res = (min(indices), max(indices))
+            subtree_ranges[node_id] = res
+            return res
+
+        # Iterate over all nodes to find valid compound spans
+        # In dependency trees, every head (that has children with compound relations) formulates a span
+        for head_id in token_ids:
+            kids = children[head_id]
+            if not kids:
+                continue
+                
+            # Check if this subtree constitutes a valid compound
+            # Collect relations of direct children to determine Compound Type
+            child_rels = [node_relations.get(k, '') for k in kids]
+            valid_rels = [r for r in child_rels if r not in ['No_rel', 'root', 'Comp_root', '']]
+            
+            if valid_rels:
+                # Calculate Span Coverage
+                s_min, s_max = get_subtree_range(head_id)
+                
+                # Determine Label (Majority vote or specific precedence)
+                # For NeCTI, usually the child's relation defines the compound type (e.g., Tatpurusha)
+                # If multiple different relations exist, we might output multiple spans or a combined label
+                # Here we take the first valid relation (simplified for standard DepNeCTI)
+                primary_label = valid_rels[0] 
+                
+                # Append (start, end, label)
+                # Note: SpanBasedEvaluator usually expects 0-indexed or 1-indexed. 
+                # Adjust 's_min' and 's_max' to match your evaluator's expectation.
+                # Assuming evaluator matches the token_ids provided (1-based):
+                spans.append((s_min, s_max, primary_label))
+
+        return spans
     
     def train(self):
         """Main training loop"""
@@ -342,10 +436,11 @@ class NeCTITrainer:
                 if hasattr(self.model, 'last_losses') and self.model.last_losses:
                     postfix_dict['diff'] = f"{self.model.last_losses['diffusion']:.4f}"
                     postfix_dict['cont'] = f"{self.model.last_losses['contrastive']:.4f}"
+                    postfix_dict['t_avg'] = f"{self.model.last_losses['ts_mean']:.0f}"
                 
                 pbar.set_postfix(postfix_dict)
                 
-                # Log to wandb
+                # Log to wandb (include contrastive loss tracking)
                 if self.args.logger == 'wandb':
                     log_dict = {
                         'train/loss': loss.item(),
@@ -357,6 +452,10 @@ class NeCTITrainer:
                     if hasattr(self.model, 'last_losses') and self.model.last_losses:
                         log_dict['train/diffusion_loss'] = self.model.last_losses['diffusion']
                         log_dict['train/contrastive_loss'] = self.model.last_losses['contrastive']
+                        log_dict['train/ts_mean'] = self.model.last_losses['ts_mean']
+                        # Track contrastive application rate
+                        contrastive_active = 1.0 if self.model.last_losses['contrastive'] > 0 else 0.0
+                        log_dict['train/contrastive_active'] = contrastive_active
                     wandb.log(log_dict)
             
             avg_train_loss = train_loss / train_steps
@@ -435,65 +534,94 @@ class NeCTITrainer:
     
     @torch.no_grad()
     def evaluate(self, dataloader, split_name="dev"):
-        """Evaluate model on given dataloader"""
         self.model.eval()
         
-        all_predictions = []
-        all_labels = []
-        all_compounds = []
+        # Use the specific Span evaluator
+        from span_based_evaluator import SpanBasedEvaluator
+        
+        true_spans_all = []
+        pred_spans_all = []
         
         for batch in tqdm(dataloader, desc=f"Evaluating {split_name}"):
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             seq_labels = batch['seq_labels'].to(self.device)
-            compounds = batch['compounds']
-            words2pieces = batch.get('words2pieces', None)
-            if words2pieces is not None:
-                words2pieces = words2pieces.to(self.device)
             
-            predictions, _ = self.model(input_ids, attention_mask, seq_labels, words2pieces)
+            # Predictions (Bit Diffusion)
+            predictions, _ = self.model(input_ids, attention_mask, seq_labels, None)
             
-            # Collect predictions and labels (excluding padding)
             mask = (seq_labels != -100)
             
-            batch_preds = predictions[mask].cpu().numpy()
-            batch_labels = seq_labels[mask].cpu().numpy()
-            
-            all_predictions.extend(batch_preds.tolist())
-            all_labels.extend(batch_labels.tolist())
-            all_compounds.extend(compounds)
+            # Process sentence by sentence
+            for i in range(input_ids.shape[0]):
+                # 1. Get Length
+                valid_len = mask[i].sum().item()
+                
+                # 2. Get Raw Predictions and Truth (IDs)
+                pred_ids = predictions[i, :valid_len].cpu().tolist()
+                
+                # 3. Convert IDs -> Relative Tags (e.g. "+1:Tat")
+                pred_tags = [self.label_set.id2label(pid) for pid in pred_ids]
+                
+                # 4. Decode Tags -> Spans (The new logic)
+                # Create 1-based token IDs [1, 2, 3...]
+                token_indices = list(range(1, valid_len + 1))
+                pred_spans_sent = self.decode_relative_to_spans(token_indices, pred_tags)
+                
+                # 5. Get Ground Truth Spans
+                # NeCTIDataset returns compounds in a dict format. We must convert to tuples.
+                # Format from dataset: {'start': 0-indexed, 'end': 0-indexed, 'internal_types': [...]}
+                raw_true_compounds = batch['compounds'][i]
+                true_spans_sent = []
+                
+                for comp in raw_true_compounds:
+                    # Convert 0-indexed (dataset) to 1-indexed (evaluator) if necessary
+                    # Assuming decode_relative_to_spans returns 1-based (based on token_indices passed)
+                    s_start = comp['start'] + 1
+                    s_end = comp['end'] + 1
+                    
+                    # Extract type: NeCTI dataset stores types in 'internal_types' list
+                    # Use the first type or 'Compound' fallback
+                    c_types = comp.get('internal_types', [])
+                    c_label = c_types[0] if c_types else comp.get('type', 'Compound')
+                    
+                    true_spans_sent.append((s_start, s_end, c_label))
+                
+                true_spans_all.append(true_spans_sent)
+                pred_spans_all.append(pred_spans_sent)
         
-        # Calculate metrics
-        results = self._calculate_metrics(all_predictions, all_labels)
+        # Calculate Metrics using the strict SpanBasedEvaluator
+        # This gives you USS (Unlabeled), LSS (Labeled), and EM (Exact Match)
+        results = SpanBasedEvaluator.evaluate_batch(true_spans_all, pred_spans_all)
         
         return results
     
-    def _calculate_metrics(self, predictions: List[int], labels: List[int]) -> Dict[str, float]:
-        """Calculate precision, recall, and F1 score"""
-        predictions = np.array(predictions)
-        labels = np.array(labels)
+    # def _calculate_metrics(self, predictions: List[int], labels: List[int]) -> Dict[str, float]:
+    #     """Calculate precision, recall, and F1 score"""
+    #     predictions = np.array(predictions)
+    #     labels = np.array(labels)
         
-        # For compound identification: treat No_rel and root as negative class
-        no_rel_id = self.label_set.label2id('No_rel')
-        root_id = self.label_set.label2id('root')
+    #     # For compound identification: treat No_rel and root as negative class
+    #     no_rel_id = self.label_set.label2id('No_rel')
+    #     root_id = self.label_set.label2id('root')
         
-        # Binary classification: compound vs non-compound
-        pred_is_compound = (predictions != no_rel_id) & (predictions != root_id)
-        label_is_compound = (labels != no_rel_id) & (labels != root_id)
+    #     # Binary classification: compound vs non-compound
+    #     pred_is_compound = (predictions != no_rel_id) & (predictions != root_id)
+    #     label_is_compound = (labels != no_rel_id) & (labels != root_id)
         
-        tp = np.sum(pred_is_compound & label_is_compound)
-        fp = np.sum(pred_is_compound & ~label_is_compound)
-        fn = np.sum(~pred_is_compound & label_is_compound)
+    #     tp = np.sum(pred_is_compound & label_is_compound)
+    #     fp = np.sum(pred_is_compound & ~label_is_compound)
+    #     fn = np.sum(~pred_is_compound & label_is_compound)
         
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    #     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    #     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    #     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
         
-        return {
-            'precision': precision,
-            'recall': recall,
-            'f1': f1
-        }
+    #     return {
+    #         'precision': precision,
+    #         'recall': recall,
+    #         'f1': f1
+    #     }
     
     def _save_model(self, epoch, f1_score, is_best=False):
         """Save model checkpoint"""

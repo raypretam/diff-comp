@@ -15,7 +15,7 @@ export TOKENIZERS_PARALLELISM=false
 # Training configuration
 CONFIG_FILE="necti_finegrain_xlmr.yaml"
 GRANULARITY="Finegrain"
-BACKBONE="xlm-roberta-large"  # Changed from base to large (1024 dims)
+BACKBONE="google/muril-base-cased"  # Changed from base to large (1024 dims)
 DATA_PATH="/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data"
 
 # Context mode: uncomment one of the following
@@ -23,15 +23,15 @@ DATA_PATH="/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data"
 USE_CONTEXT="--use_context"  # With Context
 
 # Run training
-CUDA_VISIBLE_DEVICES=0 python trainer_necti.py \
+CUDA_VISIBLE_DEVICES=1 python trainer_necti.py \
     --config_file ${CONFIG_FILE} \
     --granularity ${GRANULARITY} \
     --backbone ${BACKBONE} \
     --data_path ${DATA_PATH} \
     ${USE_CONTEXT} \
-    --logger wandb \
+    --logger none \
     --batch_size 8 \
-    --max_epochs 200 \
+    --max_epochs 50 \
     --lr_bert 2e-5 \
     --lr_other 5e-4 \
     --num_workers 4 \

@@ -268,7 +268,7 @@ class BitDit(nn.Module):
             clip_x_start: True/False
 
         Returns:
-            (x_start, nosie): [bsz, len, bits]
+            (x_start, noise): [bsz, len, bits]
         """
         model_output = self.model(x, t, bert_features, attention_mask, x_self_cond)
         maybe_clip = partial(torch.clamp, min=-self.scale, max=self.scale) if clip_x_start else identity
@@ -515,29 +515,39 @@ class BitDit(nn.Module):
             else:
                 raise NotImplementedError(f"Loss type '{self.loss_type}' not implemented")
             
-            # Add contrastive loss if enabled
-            if self.use_contrastive:
+            # Add contrastive loss if enabled (only at low noise timesteps for cleaner predictions)
+            # Use mean timestep instead of max to allow more contrastive updates
+            if self.use_contrastive and ts.float().mean() < self.timesteps * 0.3:
                 # Convert bit predictions back to continuous embeddings for contrastive learning
                 # pred: [bsz, seq_len, bits]
                 # We use the predicted bits as embeddings for contrastive learning
+                # Only applied when mean(ts) < 30% of total timesteps (cleaner predictions)
                 contrastive_loss = self.contrastive_loss_fn(
                     embeddings=pred,  # Use bit predictions as embeddings
                     labels=seq_labels,  # Original categorical labels
                     mask=label_mask  # Attention mask
                 )
                 
-                # Combined loss
+                # Combined loss (weighted sum)
                 total_loss = diffusion_loss + self.contrastive_weight * contrastive_loss
                 
                 # Store losses for logging (accessible via model.last_losses)
                 self.last_losses = {
                     'total': total_loss.item(),
                     'diffusion': diffusion_loss.item(),
-                    'contrastive': contrastive_loss.item()
+                    'contrastive': contrastive_loss.item(),
+                    'ts_mean': ts.float().mean().item()
                 }
                 
                 return total_loss
             else:
+                # No contrastive loss applied this batch
+                self.last_losses = {
+                    'total': diffusion_loss.item(),
+                    'diffusion': diffusion_loss.item(),
+                    'contrastive': 0.0,
+                    'ts_mean': ts.float().mean().item()
+                }
                 return diffusion_loss
 
     def prepare_targets(self, gold_seq_labels):
