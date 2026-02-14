@@ -1,0 +1,63 @@
+# Configuration for SaCTI (Sanskrit Compound Type Identification) - Coarse Labels
+# Using XLM-RoBERTa encoder with DiffusionSL decoder
+# Task: Token-level compound type classification
+
+# Model Configuration
+base: 'ner'
+dataset: 'sacti_coarse'
+num_classes: 10  # Will be adjusted automatically based on data (Coarse has ~6-8 types)
+backbone: 'FacebookAI/xlm-roberta-large'  # Multilingual Indic BERT
+time_steps: 1000
+sampling_steps: 10  # Moderate sampling for classification task
+ddim_sampling_eta: 0.2
+self_condition: True
+snr_scale: 2.0  # Higher SNR to prevent mode collapse
+dim_model: 1024  # XLM-R large hidden size
+dim_time: 512
+depth: 8  # Moderate depth for token classification
+objective: 'pred_x0'
+noise_schedule: 'cosine'
+loss_type: 'l2'
+compound_aware: False  # Disable for simple classification
+use_graph_encoder: False  # Not needed for flat classification
+add_lstm: False
+freeze_bert: False # Allow BERT to fine-tune for better performance
+max_length: 128  # SaCTI sentences are shorter
+network_architecture: 'transformer'
+ensemble: False
+
+# Contrastive Learning Configuration (disabled for baseline)
+use_contrastive: False
+contrastive_weight: 0.05
+contrastive_temp: 0.07
+contrastive_type: 'simple'
+
+# Data Configuration
+data_path: "/home/pretam-pg/SaCTI/data"  # Base path to SaCTI data
+granularity: 'coarse'  # Options: 'coarse' or 'fine' (lowercase)
+language: 'sacti'  # Options: 'sacti', 'marathi', 'english', or 'auto'
+
+# Training Configuration
+logger: 'None'  # Options: 'wandb', 'tensorboard', 'None'
+output_dir: 'saved_models/sacti_coarse'
+batch_size: 16  # Larger batch for classification task
+num_workers: 4
+max_epochs: 50  # Fewer epochs for classification
+max_steps: 100000
+warmup_steps: 500
+warmup_ratio: 0.05
+optimizer_type: 'AdamW'
+lr_scheduler_type: 'cosine'
+lr_bert: 2e-5  # Standard BERT fine-tuning rate
+lr_other: 1e-4  # Higher for decoder
+weight_decay: 0.01
+max_grad_norm: 1.0
+accumulation_steps: 1
+
+# GPU Configuration
+use_gpu: True
+gpus: 1
+
+# Early Stopping Configuration
+patience: 10  # Early stopping patience
+min_delta: 0.0001

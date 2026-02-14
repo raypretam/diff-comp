@@ -63,7 +63,7 @@ def get_parser():
     # NeCTI-specific args
     parser.add_argument("--data_path", default="/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data", type=str,
                        help="Base path to NeCTIS Model Data")
-    parser.add_argument("--granularity", default="Coarse", type=str, choices=['Coarse', 'Finegrain'],
+    parser.add_argument("--granularity", default="Coarse", type=str, choices=['Coarse', 'Finegrain', 'coarse', 'fine'],
                        help="Compound granularity level")
     parser.add_argument("--use_context", action='store_true',
                        help="Use 'With Context' data instead of 'Without Context' data")
@@ -73,6 +73,30 @@ def get_parser():
                        help="Use Chu-Liu-Edmonds algorithm for structured decoding during inference")
     parser.add_argument("--patience", default=5, type=int, help="Early stopping patience (number of epochs)")
     parser.add_argument("--min_delta", default=0.0001, type=float, help="Minimum improvement for early stopping")
+    
+    # Compound-aware diffusion args
+    parser.add_argument("--compound_aware", default=False, type=bool, 
+                       help="Enable compound-level diffusion")
+    parser.add_argument("--compound_pooling", default='mean', type=str, choices=['mean', 'max', 'attention', 'lstm'],
+                       help="Pooling method for compound representations")
+    parser.add_argument("--use_graph_encoder", default=False, type=bool,
+                       help="Use Graph-Aware Encoder to model dependencies between compounds")
+    parser.add_argument("--num_gnn_layers", default=2, type=int,
+                       help="Number of GNN layers for inter-compound message passing")
+    
+    # Contrastive learning args
+    parser.add_argument("--use_contrastive", default=False, type=bool,
+                       help="Enable contrastive learning")
+    parser.add_argument("--contrastive_weight", default=0.1, type=float,
+                       help="Weight for contrastive loss")
+    parser.add_argument("--contrastive_temp", default=0.07, type=float,
+                       help="Temperature for InfoNCE contrastive loss")
+    parser.add_argument("--contrastive_type", default='simple', type=str, choices=['simple', 'hierarchical'],
+                       help="Type of contrastive learning")
+    
+    # SaCTI-specific args
+    parser.add_argument("--language", default='auto', type=str,
+                       help="Language for SaCTI: 'sacti', 'marathi', 'english', or 'auto'")
     
     args = parser.parse_args()
     default_path = os.path.join(os.getcwd(), "configs", args.config_file)

@@ -6,20 +6,22 @@
 base: 'ner'
 dataset: 'necti_finegrain'
 num_classes: 54  # Will be adjusted automatically based on data
-backbone: 'xlm-roberta-large'  # XLM-R encoder
+backbone: 'google/muril-base-cased'  # XLM-R encoder
 time_steps: 5000
 sampling_steps: 100  # INCREASED from 10 to 50 for finer generation
 ddim_sampling_eta: 0.2
 self_condition: True
-snr_scale: 0.1 # SAME as coarse model for consistency
+snr_scale: 1.0  # CRITICAL: Increased to 1.0 to prevent ROOT:Comp_root collapse (was 0.1)
 dim_model: 768  # XLM-R hidden size
 dim_time: 512  # INCREASED from 256 for richer temporal embeddings
 depth: 12  # INCREASED from 6 to 12 (match coarse model capacity despite 10x more classes)
 objective: 'pred_x0'
 noise_schedule: 'cosine'  # CHANGED from linear to cosine (better for more steps)
 loss_type: 'l2'  # Options: 'l2', 'l1'
-compound_aware: False  # DISABLED: Isolate issue - token-level is more stable
+compound_aware: True  # Enable compound-level diffusion (NOW WITH WORKING INFERENCE!)
 compound_pooling: 'mean'  # Pooling method: 'mean', 'max', 'attention', 'lstm'
+use_graph_encoder: True  # Use Graph-Aware Encoder to model dependencies BETWEEN compounds
+num_gnn_layers: 2  # Number of GNN layers for inter-compound message passing
 add_lstm: False  # ENABLED LSTM for better sequence modeling
 freeze_bert: False
 max_length: 256
@@ -33,22 +35,22 @@ contrastive_temp: 0.07  # Temperature for InfoNCE (lower = harder negatives)
 contrastive_type: 'simple'  # 'simple' or 'hierarchical'
 
 # Data Configuration
-data_path: 
+data_path: "/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data"
 granularity: 'Finegrain'
 
 # Training Configuration
 logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
 output_dir: 'saved_models/necti_finegrain'
-batch_size: 8  # REDUCED from 16 due to deeper model (12 layers)
+batch_size: 4  # CRITICAL: Reduced to 4 for more stochasticity (prevents mode collapse)
 num_workers: 8  # INCREASED for better data loading
 max_epochs: 200 
-max_steps: 500000  # INCREASED from 250000 for more training
-warmup_steps: 5000  # INCREASED from 1000 for stability with deeper model
+max_steps: 250000  # INCREASED from 250000 for more training
+warmup_steps: 1000  # INCREASED from 1000 for stability with deeper mode
 warmup_ratio: 0.01
 optimizer_type: 'AdamW'
 lr_scheduler_type: 'cosine'  # CHANGED from linear to cosine for better convergence
-lr_bert: 5e-6  # REDUCED from 2e-5 for stability with more capacity
-lr_other: 3e-5  # REDUCED from 5e-4 for stability
+lr_bert: 2e-5  # CRITICAL: Increased to force BERT adaptation (prevent collapse)
+lr_other: 1e-4  # Increased to force decoder learning
 weight_decay: 0.01
 max_grad_norm: 1.0
 accumulation_steps: 1  # ADDED gradient accumulation for effective batch size 32

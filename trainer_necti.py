@@ -75,6 +75,8 @@ class NeCTITrainer:
         # Get compound-aware parameters
         compound_aware = getattr(self.args, 'compound_aware', False)
         compound_pooling = getattr(self.args, 'compound_pooling', 'mean')
+        use_graph_encoder = getattr(self.args, 'use_graph_encoder', False)
+        num_gnn_layers = getattr(self.args, 'num_gnn_layers', 2)
         
         # Get contrastive learning parameters
         use_contrastive = getattr(self.args, 'use_contrastive', False)
@@ -104,6 +106,8 @@ class NeCTITrainer:
             num_labels=len(self.label_set),
             compound_aware=compound_aware,
             compound_pooling=compound_pooling,
+            use_graph_encoder=use_graph_encoder,
+            num_gnn_layers=num_gnn_layers,
             label_set=self.label_set if compound_aware else None,
             use_contrastive=use_contrastive,
             contrastive_weight=contrastive_weight,
@@ -115,7 +119,13 @@ class NeCTITrainer:
         
         # Initialize tokenizer for XLM-R
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
-        self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length, add_lstm=self.args.add_lstm)
+        # CRITICAL: Pass label_set to collator so it can mask ROOT:Comp_root
+        self.collate_fn = NeCTICollator(
+            self.tokenizer, 
+            max_length=self.args.max_length, 
+            add_lstm=self.args.add_lstm,
+            label_set=self.label_set
+        )
         
         # Create data loaders (using standard sampling for all splits)
         self.train_dataloader = self._get_dataloader('train', self.args.batch_size, balanced=False)
@@ -453,28 +463,28 @@ class NeCTITrainer:
             print("\nEvaluating on dev set...")
             dev_results = self.evaluate(self.dev_dataloader, "dev")
             
-            print(f"Dev F1: {dev_results['f1']:.4f}")
-            print(f"Dev Precision: {dev_results['precision']:.4f}")
-            print(f"Dev Recall: {dev_results['recall']:.4f}")
+            print(f"Dev USS: {dev_results['USS']:.4f}")
+            print(f"Dev LSS: {dev_results['LSS']:.4f}")
+            print(f"Dev EM: {dev_results['EM']:.4f}")
             
             if self.args.logger == 'wandb':
                 wandb.log({
-                    'dev/f1': dev_results['f1'],
-                    'dev/precision': dev_results['precision'],
-                    'dev/recall': dev_results['recall'],
+                    'dev/USS': dev_results['USS'],
+                    'dev/LSS': dev_results['LSS'],
+                    'dev/EM': dev_results['EM'],
                     'epoch': epoch
                 })
             
             # Save only best model
-            if dev_results['f1'] > best_f1:
-                best_f1 = dev_results['f1']
-                self._save_model(epoch, dev_results['f1'], is_best=True)
-                print(f"New best F1: {best_f1:.4f} - Model saved!")
+            if dev_results['USS'] > best_f1:
+                best_f1 = dev_results['USS']
+                self._save_model(epoch, dev_results['USS'], is_best=True)
+                print(f"New best USS: {best_f1:.4f} - Model saved!")
             
             # Early stopping check
-            if dev_results['f1'] > self.best_f1_for_early_stopping + self.min_delta:
+            if dev_results['USS'] > self.best_f1_for_early_stopping + self.min_delta:
                 # Significant improvement
-                self.best_f1_for_early_stopping = dev_results['f1']
+                self.best_f1_for_early_stopping = dev_results['USS']
                 self.early_stopping_counter = 0
             else:
                 # No significant improvement
@@ -484,13 +494,13 @@ class NeCTITrainer:
                 if self.early_stopping_counter >= self.patience:
                     print(f"\n{'='*50}")
                     print(f"Early stopping triggered after {epoch} epochs!")
-                    print(f"Best F1 score: {best_f1:.4f}")
+                    print(f"Best USS score: {best_f1:.4f}")
                     print(f"{'='*50}\n")
                     break
             
             # Save checkpoint every 20 epochs
             if epoch % 20 == 0:
-                self._save_model(epoch, dev_results['f1'], is_best=False)
+                self._save_model(epoch, dev_results['EM'], is_best=False)
                 print(f"Checkpoint saved at epoch {epoch}")
         
         # Final evaluation on test set
@@ -503,22 +513,78 @@ class NeCTITrainer:
         
         test_results = self.evaluate(self.test_dataloader, "test")
         print(f"\nTest Results:")
-        print(f"F1: {test_results['f1']:.4f}")
-        print(f"Precision: {test_results['precision']:.4f}")
-        print(f"Recall: {test_results['recall']:.4f}")
+        print(f"USS: {test_results['USS']:.4f}")
+        print(f"LSS: {test_results['LSS']:.4f}")
+        print(f"EM: {test_results['EM']:.4f}")
         
         if self.ood_dataloader is not None:
             print("\nEvaluating on OOD set...")
             ood_results = self.evaluate(self.ood_dataloader, "ood")
-            print(f"OOD F1: {ood_results['f1']:.4f}")
+            print(f"OOD USS: {ood_results['USS']:.4f}")
         
         if self.args.logger == 'wandb':
             wandb.log({
-                'test/f1': test_results['f1'],
-                'test/precision': test_results['precision'],
-                'test/recall': test_results['recall']
+                'test/USS': test_results['USS'],
+                'test/LSS': test_results['LSS'],
+                'test/EM': test_results['EM']
             })
     
+    def infer_and_add_roots(self, token_indices: List[int], tags: List[str]) -> List[str]:
+        """
+        Infer ROOT:Comp_root positions from dependency structure and add them.
+        Roots are tokens that have NO incoming edges from compound relations.
+        """
+        # Build set of tokens that are pointed to by compound relations
+        has_incoming = set()
+        
+        for i, tag in enumerate(tags):
+            if tag in ["ROOT:root", "ROOT:Comp_root", "No_rel"]:
+                continue
+            
+            if ":" in tag:
+                try:
+                    dist_str, rel = tag.split(":", 1)
+                    # Skip No_rel relations
+                    if rel == "No_rel":
+                        continue
+                    dist = int(dist_str)
+                    head_idx = i + dist
+                    
+                    if 0 <= head_idx < len(token_indices):
+                        # This token (head_idx) receives an edge
+                        has_incoming.add(head_idx)
+                except:
+                    pass
+        
+        # Tokens without incoming compound edges are roots
+        result_tags = []
+        for i, tag in enumerate(tags):
+            # If this token has compound children but no incoming compound edges -> it's a root
+            if i not in has_incoming and tag != "No_rel":
+                # Check if it has outgoing edges (i.e., it's part of a compound)
+                has_outgoing = False
+                for j, other_tag in enumerate(tags):
+                    if ":" in other_tag:
+                        try:
+                            dist_str, rel = other_tag.split(":", 1)
+                            if rel != "No_rel":
+                                dist = int(dist_str)
+                                if j + dist == i:
+                                    has_outgoing = True
+                                    break
+                        except:
+                            pass
+                
+                # If it has compound children pointing to it, mark as root
+                if has_outgoing:
+                    result_tags.append("ROOT:Comp_root")
+                else:
+                    result_tags.append(tag)
+            else:
+                result_tags.append(tag)
+        
+        return result_tags
+
     @torch.no_grad()
     def evaluate(self, dataloader, split_name="dev"):
         self.model.eval()
@@ -528,6 +594,12 @@ class NeCTITrainer:
         
         true_spans_all = []
         pred_spans_all = []
+        
+        # Debug counters
+        debug_empty_preds = 0
+        debug_empty_true = 0
+        debug_total = 0
+        debug_samples = []
         
         for batch in tqdm(dataloader, desc=f"Evaluating {split_name}"):
             input_ids = batch['input_ids'].to(self.device)
@@ -544,42 +616,60 @@ class NeCTITrainer:
                 # 1. Get Length
                 valid_len = mask[i].sum().item()
                 
-                # 2. Get Raw Predictions and Truth (IDs)
+                # 2. Get Raw Predictions and Ground Truth (IDs)
                 pred_ids = predictions[i, :valid_len].cpu().tolist()
+                true_ids = seq_labels[i, :valid_len].cpu().tolist()
                 
                 # 3. Convert IDs -> Relative Tags (e.g. "+1:Tat")
-                pred_tags = [self.label_set.id2label(pid) for pid in pred_ids]
+                # Note: -100 (masked) tokens will map back to some label, but we filter by valid_len
+                pred_tags = [self.label_set.id2label(pid) if pid != -100 else "No_rel" for pid in pred_ids]
+                true_tags = [self.label_set.id2label(tid) if tid != -100 else "No_rel" for tid in true_ids]
                 
-                # 4. Decode Tags -> Spans (The new logic)
-                # Create 1-based token IDs [1, 2, 3...]
+                # 4. CRITICAL: Infer ROOT:Comp_root positions from dependency structure
+                # (since we masked it from training, model can't predict it)
                 token_indices = list(range(1, valid_len + 1))
-                pred_spans_sent = self.decode_relative_to_spans(token_indices, pred_tags)
+                pred_tags_with_roots = self.infer_and_add_roots(token_indices, pred_tags)
+                true_tags_with_roots = self.infer_and_add_roots(token_indices, true_tags)
                 
-                # 5. Get Ground Truth Spans
-                # NeCTIDataset returns compounds in a dict format. We must convert to tuples.
-                # Format from dataset: {'start': 0-indexed, 'end': 0-indexed, 'internal_types': [...]}
-                raw_true_compounds = batch['compounds'][i]
-                true_spans_sent = []
-                
-                for comp in raw_true_compounds:
-                    # Convert 0-indexed (dataset) to 1-indexed (evaluator) if necessary
-                    # Assuming decode_relative_to_spans returns 1-based (based on token_indices passed)
-                    s_start = comp['start'] + 1
-                    s_end = comp['end'] + 1
-                    
-                    # Extract type: NeCTI dataset stores types in 'internal_types' list
-                    # Use the first type or 'Compound' fallback
-                    c_types = comp.get('internal_types', [])
-                    c_label = c_types[0] if c_types else comp.get('type', 'Compound')
-                    
-                    true_spans_sent.append((s_start, s_end, c_label))
+                # 5. Decode Tags -> Spans using dependency structure
+                pred_spans_sent = self.decode_relative_to_spans(token_indices, pred_tags_with_roots)
+                true_spans_sent = self.decode_relative_to_spans(token_indices, true_tags_with_roots)
                 
                 true_spans_all.append(true_spans_sent)
                 pred_spans_all.append(pred_spans_sent)
+                
+                # Debug tracking
+                debug_total += 1
+                if not pred_spans_sent:
+                    debug_empty_preds += 1
+                if not true_spans_sent:
+                    debug_empty_true += 1
+                if len(debug_samples) < 3:
+                    debug_samples.append({
+                        'pred_tags': pred_tags_with_roots,
+                        'true_tags': true_tags_with_roots,
+                        'pred_spans': pred_spans_sent,
+                        'true_spans': true_spans_sent
+                    })
         
         # Calculate Metrics using the strict SpanBasedEvaluator
         # This gives you USS (Unlabeled), LSS (Labeled), and EM (Exact Match)
         results = SpanBasedEvaluator.evaluate_batch(true_spans_all, pred_spans_all)
+        
+        # Debug output
+        print(f"\n{'='*60}")
+        print(f"DEBUG EVALUATION STATS ({split_name}):")
+        print(f"Total sentences: {debug_total}")
+        print(f"Empty predictions: {debug_empty_preds} ({100*debug_empty_preds/debug_total:.1f}%)")
+        print(f"Empty ground truth: {debug_empty_true} ({100*debug_empty_true/debug_total:.1f}%)")
+        print(f"\nSample predictions (first 3):")
+        for idx, sample in enumerate(debug_samples):
+            print(f"\n  Sample {idx+1}:")
+            print(f"    Pred tags: {sample['pred_tags'][:10]}...")
+            print(f"    True tags: {sample['true_tags'][:10]}...")
+            print(f"    Pred spans: {sample['pred_spans']}")
+            print(f"    True spans: {sample['true_spans']}")
+        print(f"{'='*60}\n")
         
         return results
     

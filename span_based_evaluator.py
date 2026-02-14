@@ -199,9 +199,9 @@ class SpanBasedEvaluator:
         em = SpanBasedEvaluator.calculate_exact_match(true_spans_list, pred_spans_list)
         
         return {
-            'uss': uss,
-            'lss': lss,
-            'exact_match': em
+            'USS': uss,
+            'LSS': lss,
+            'EM': em
         }
 
 

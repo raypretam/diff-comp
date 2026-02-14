@@ -30,7 +30,7 @@ CUDA_VISIBLE_DEVICES=1 python trainer_necti.py \
     --data_path ${DATA_PATH} \
     ${USE_CONTEXT} \
     --logger none \
-    --batch_size 8 \
+    --batch_size 16 \
     --max_epochs 50 \
     --lr_bert 2e-5 \
     --lr_other 5e-4 \

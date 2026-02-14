@@ -334,10 +334,13 @@ class NeCTIDataset(Dataset):
 class NeCTICollator:
     """Collator for NeCTI dataset compatible with DiffusionSL"""
     
-    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 256, add_lstm: bool = False):
+    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 256, add_lstm: bool = False, label_set=None):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.add_lstm = add_lstm
+        self.label_set = label_set
+        # Get ROOT:Comp_root ID to mask it from loss (it's 29% of tokens and causes collapse)
+        self.root_comp_id = label_set.label2id('ROOT:Comp_root') if label_set else None
     
     def __call__(self, batch):
         # Extract data from batch items
@@ -371,7 +374,12 @@ class NeCTICollator:
                     if i == 0 or temp[i] != temp[i - 1]:
                         # First subword of a word gets the label
                         if temp[i] < len(las):
-                            seql.append(las[temp[i]])
+                            label_id = las[temp[i]]
+                            # CRITICAL FIX: Mask ROOT:Comp_root from loss (causes mode collapse)
+                            if label_id == self.root_comp_id:
+                                seql.append(-100)  # Exclude from loss like padding
+                            else:
+                                seql.append(label_id)
                         else:
                             seql.append(-100)
                     else:

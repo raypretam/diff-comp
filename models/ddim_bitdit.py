@@ -12,6 +12,7 @@ from .utils import decimal_to_bits, bits_to_decimal
 from data.cws.cws_dataset import LabelSet
 from .dit_discrete import DiT
 from .compound_encoder import CompoundEncoder, CompoundDecoder, extract_compound_masks_from_labels
+from .graph_compound_encoder import GraphCompoundEncoder
 from .contrastive_loss import create_contrastive_loss
 
 __all__ = ["BitDit"]
@@ -94,6 +95,8 @@ class BitDit(nn.Module):
                  freeze_bert: bool = False,
                  compound_aware: bool = False,
                  compound_pooling: str = 'mean',
+                 use_graph_encoder: bool = False,
+                 num_gnn_layers: int = 2,
                  label_set=None,
                  use_contrastive: bool = False,
                  contrastive_weight: float = 0.1,
@@ -165,14 +168,33 @@ class BitDit(nn.Module):
             print(f"Contrastive learning enabled with weight={contrastive_weight}")
         
         # Compound-aware diffusion components
+        self.use_graph_encoder = use_graph_encoder
         if compound_aware:
             print(f"\n{'='*80}")
-            print("Initializing Compound-Aware Diffusion")
+            if use_graph_encoder:
+                print("Initializing GRAPH-AWARE Compound-Aware Diffusion")
+            else:
+                print("Initializing Compound-Aware Diffusion")
             print(f"{'='*80}")
             print(f"BERT dimension: {self.bert_dim}")
             print(f"Target dimension (dim_model): {dim_model}")
             print(f"Pooling method: {compound_pooling}")
-            self.compound_encoder = CompoundEncoder(self.bert_dim, output_dim=dim_model, pooling_method=compound_pooling)
+            
+            if use_graph_encoder:
+                # Use graph-aware encoder that encodes dependencies BETWEEN compounds
+                self.compound_encoder = GraphCompoundEncoder(
+                    self.bert_dim, 
+                    output_dim=dim_model, 
+                    pooling_method=compound_pooling,
+                    num_gnn_layers=num_gnn_layers,
+                    num_relation_types=num_classes  # Use num_classes as upper bound for relation types
+                )
+                print(f"  Using GraphCompoundEncoder with {num_gnn_layers} GNN layers")
+            else:
+                # Use standard encoder (no inter-compound dependencies)
+                self.compound_encoder = CompoundEncoder(self.bert_dim, output_dim=dim_model, pooling_method=compound_pooling)
+                print("  Using standard CompoundEncoder (no inter-compound dependencies)")
+            
             self.compound_decoder = CompoundDecoder()
             print("✓ Compound encoder and decoder initialized")
             print(f"{'='*80}\n")
@@ -409,18 +431,59 @@ class BitDit(nn.Module):
             features = bert_output
 
         if not self.training:
-            shape = (*features.shape[:2], self.bits.item())
-            results = self.sample(shape, features, label_mask)
-            bit_seq, path_x = results
-            path_x = torch.stack([bits_to_decimal(r, self.bits.item()) for r in path_x], dim=1)
-            results = bits_to_decimal(bit_seq, self.bits.item())
-            # ensemble_res = torch.zeros_like(results, dtype=results.dtype)
-            # for i in range(batch_res.shape[0]):
-            #     for j in range(batch_res.shape[-1]):
-            #         temp = batch_res[i, :, j]
-            #         ensemble_res[i][j] = temp.bincount().argmax()
-            
-            return results, path_x
+            # Inference mode
+            if self.compound_aware and self.label_set is not None:
+                # Compound-aware inference (2-pass approach)
+                # Pass 1: Token-level prediction to get initial labels
+                shape = (*features.shape[:2], self.bits.item())
+                results_pass1 = self.sample(shape, features, label_mask)
+                bit_seq_pass1, _ = results_pass1
+                predictions_pass1 = bits_to_decimal(bit_seq_pass1, self.bits.item())
+                
+                # Pass 2: Extract compounds from pass1 predictions and do compound-level inference
+                try:
+                    # Extract compound masks from predicted labels
+                    compound_masks = extract_compound_masks_from_labels(predictions_pass1, self.label_set)
+                    
+                    # Pool token features to compound level
+                    if self.use_graph_encoder:
+                        compound_features, compound_mask = self.compound_encoder(
+                            features, compound_masks, predictions_pass1, self.label_set
+                        )
+                    else:
+                        compound_features, compound_mask = self.compound_encoder(features, compound_masks)
+                    
+                    # Sample at compound level
+                    compound_shape = (*compound_features.shape[:2], self.bits.item())
+                    results_pass2 = self.sample(compound_shape, compound_features, compound_mask)
+                    bit_seq_compounds, _ = results_pass2
+                    
+                    # Broadcast compound predictions back to tokens
+                    bit_seq = self.compound_decoder(bit_seq_compounds, compound_masks)
+                    
+                    # Convert to decimal
+                    results = bits_to_decimal(bit_seq, self.bits.item())
+                    path_x = [results]  # Single pass for compound-aware
+                    
+                    return results, path_x
+                    
+                except Exception as e:
+                    print(f"Warning: Compound-aware inference failed ({e}). Using token-level.")
+                    # Fall back to token-level inference
+                    shape = (*features.shape[:2], self.bits.item())
+                    results = self.sample(shape, features, label_mask)
+                    bit_seq, path_x = results
+                    path_x = torch.stack([bits_to_decimal(r, self.bits.item()) for r in path_x], dim=1)
+                    results = bits_to_decimal(bit_seq, self.bits.item())
+                    return results, path_x
+            else:
+                # Standard token-level inference
+                shape = (*features.shape[:2], self.bits.item())
+                results = self.sample(shape, features, label_mask)
+                bit_seq, path_x = results
+                path_x = torch.stack([bits_to_decimal(r, self.bits.item()) for r in path_x], dim=1)
+                results = bits_to_decimal(bit_seq, self.bits.item())
+                return results, path_x
 
         if self.training:
             # categorical data to bits [bsz, ]
@@ -436,7 +499,13 @@ class BitDit(nn.Module):
                     # compound_masks: [bsz, max_compounds, seq_len]
                     
                     # Pool token-level features into compound-level
-                    compound_features, compound_mask = self.compound_encoder(features, compound_masks)
+                    # If using graph encoder, it will also encode inter-compound dependencies
+                    if self.use_graph_encoder:
+                        compound_features, compound_mask = self.compound_encoder(
+                            features, compound_masks, seq_labels, self.label_set
+                        )
+                    else:
+                        compound_features, compound_mask = self.compound_encoder(features, compound_masks)
                     # compound_features: [bsz, max_compounds, dim]
                     
                     # Pool token-level labels: use mean of token labels within each compound

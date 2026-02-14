@@ -1,0 +1,63 @@
+# Configuration for SaCTI - English Compound Type Identification
+# Using RoBERTa encoder with DiffusionSL decoder
+# Task: Token-level compound type classification
+
+# Model Configuration
+base: 'ner'
+dataset: 'sacti_english'
+num_classes: 10  # English compounds (ARG0, ARG1, Compound, etc.)
+backbone: 'roberta-base'  # Best for English
+time_steps: 5000
+sampling_steps: 50
+ddim_sampling_eta: 0.2
+self_condition: True
+snr_scale: 1.0
+dim_model: 768
+dim_time: 512
+depth: 8
+objective: 'pred_x0'
+noise_schedule: 'cosine'
+loss_type: 'l2'
+compound_aware: False
+use_graph_encoder: False
+add_lstm: False
+freeze_bert: False
+max_length: 128
+network_architecture: 'transformer'
+ensemble: False
+
+# Contrastive Learning (disabled for baseline)
+use_contrastive: False
+contrastive_weight: 0.05
+contrastive_temp: 0.07
+contrastive_type: 'simple'
+
+# Data Configuration  
+data_path: "/home/pretam-pg/SaCTI/data"
+granularity: 'coarse'
+language: 'english'  # Specify language explicitly
+
+# Training Configuration
+logger: 'None'
+output_dir: 'saved_models/sacti_english'
+batch_size: 16
+num_workers: 4
+max_epochs: 50
+max_steps: 100000
+warmup_steps: 500
+warmup_ratio: 0.05
+optimizer_type: 'AdamW'
+lr_scheduler_type: 'cosine'
+lr_bert: 2e-5
+lr_other: 1e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+accumulation_steps: 1
+
+# GPU Configuration
+use_gpu: True
+gpus: 1
+
+# Early Stopping Configuration
+patience: 10
+min_delta: 0.0001
