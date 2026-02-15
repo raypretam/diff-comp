@@ -11,7 +11,7 @@ sampling_steps: 10
 ddim_sampling_eta: 0.2
 self_condition: True
 snr_scale: 0.1  # Increased for better signal-to-noise ratio
-dim_model: 768  # XLM-R hidden size
+dim_model: 1024  # XLM-R hidden size
 dim_time: 512  # Increased from 256 for richer temporal embeddings
 depth: 6  # Doubled from 6 for deeper architecture
 # bit_dim: 16
@@ -33,7 +33,7 @@ data_path: '/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data'
 granularity: 'Coarse'
 
 # Training Configuration
-logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
+logger: 'None'  # Options: 'wandb', 'tensorboard', 'None'
 output_dir: 'saved_models/necti_coarse'
 batch_size: 1  # Reduced due to larger model
 num_workers: 8

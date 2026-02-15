@@ -166,7 +166,7 @@ class SaCTIDataset(Dataset):
         print(f"Loaded {len(self.data)} sentences for {split} split ({self.language})")
     
     def _load_data(self):
-        """Load SaCTI data from CoNLL file"""
+        """Load SaCTI data from CoNLL file with compound appending strategy"""
         # label_set already has correct path with language folder
         filepath = os.path.join(self.label_set.data_path, f"{self.split}.conll")
         
@@ -184,12 +184,10 @@ class SaCTIDataset(Dataset):
                 
                 if not line:
                     if sent_tokens:
-                        self.data.append({
-                            'tokens': sent_tokens,
-                            'compound_types': sent_labels,
-                            'gram_roles': sent_gram_roles,
-                            'raw_data': current_sent
-                        })
+                        # Process sentence: identify compounds and create samples
+                        self._process_sentence_with_compounds(
+                            sent_tokens, sent_labels, sent_gram_roles, current_sent
+                        )
                         sent_tokens = []
                         sent_labels = []
                         sent_gram_roles = []
@@ -218,11 +216,57 @@ class SaCTIDataset(Dataset):
             
             # Handle last sentence
             if sent_tokens:
+                self._process_sentence_with_compounds(
+                    sent_tokens, sent_labels, sent_gram_roles, current_sent
+                )
+    
+    def _is_compound(self, token: str) -> bool:
+        """Check if a token is a compound (contains hyphen)"""
+        return '-' in token
+    
+    def _process_sentence_with_compounds(self, tokens, labels, gram_roles, raw_data):
+        """
+        Process sentence following SaCTI paper approach:
+        - For each compound in the sentence, create a sample where compound is appended
+        - Context: [c1, c2, ..., cn, compound] where compound appears at position p (1 <= p <= n)
+        - This allows BiAffine attention to compute scores between each context word and compound
+        """
+        # Find all compound positions
+        compound_positions = [i for i, token in enumerate(tokens) if self._is_compound(token)]
+        
+        if not compound_positions:
+            # No compounds: add sentence as-is (all No_rel labels)
+            self.data.append({
+                'tokens': tokens,
+                'compound_types': labels,
+                'gram_roles': gram_roles,
+                'raw_data': raw_data,
+                'compound_position': -1,  # No compound
+                'appended': False
+            })
+        else:
+            # For each compound, create a sample with compound appended
+            for comp_pos in compound_positions:
+                compound_token = tokens[comp_pos]
+                compound_label = labels[comp_pos]
+                
+                # Append compound to end: [c1, c2, ..., cn, compound]
+                appended_tokens = tokens + [compound_token]
+                
+                # Labels: original labels + compound label at end
+                appended_labels = labels + [compound_label]
+                
+                # Gram roles
+                appended_gram_roles = gram_roles + [gram_roles[comp_pos]]
+                
                 self.data.append({
-                    'tokens': sent_tokens,
-                    'compound_types': sent_labels,
-                    'gram_roles': sent_gram_roles,
-                    'raw_data': current_sent
+                    'tokens': appended_tokens,
+                    'compound_types': appended_labels,
+                    'gram_roles': appended_gram_roles,
+                    'raw_data': raw_data,
+                    'compound_position': comp_pos,  # Original position of compound
+                    'appended': True,
+                    'compound_token': compound_token
                 })
     
     def __len__(self):
@@ -231,6 +275,8 @@ class SaCTIDataset(Dataset):
     def __getitem__(self, item):
         sentence = self.data[item]['tokens']
         compound_types = self.data[item]['compound_types']
+        compound_position = self.data[item].get('compound_position', -1)
+        appended = self.data[item].get('appended', False)
         
         # Convert labels to IDs
         labels = [self.label_set.label2id(ct) for ct in compound_types]
@@ -238,7 +284,9 @@ class SaCTIDataset(Dataset):
         return {
             'tokens': sentence,
             'labels': labels,
-            'compound_types': compound_types  # Keep original for reference
+            'compound_types': compound_types,  # Keep original for reference
+            'compound_position': compound_position,  # Position of compound in original context
+            'appended': appended  # Whether compound was appended
         }
 
 

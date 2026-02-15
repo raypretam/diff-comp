@@ -1,0 +1,140 @@
+# Configuration for Hierarchical Diffusion NeCTI
+# Two-stage diffusion: Global attention (coarse) + Local attention (fine-grained)
+# Addresses Hahn (2020) theoretical limitation of global attention
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+base: 'hierarchical_necti'
+dataset: 'necti_finegrain'
+
+# Backbone
+backbone: 'FacebookAI/xlm-roberta-large'  # Multilingual Indic BERT
+dim_model: 1024  # XLM-RoBERTa-large hidden size
+freeze_bert: False
+
+# =============================================================================
+# Diffusion Configuration
+# =============================================================================
+time_steps: 1000
+sampling_steps: 50
+noise_schedule: 'cosine'
+snr_scale: 1.0
+objective: 'pred_x0'
+loss_type: 'l2'
+
+# =============================================================================
+# Stage 1: Global Attention (Coarse Labels)
+# =============================================================================
+stage1:
+  depth: 6
+  num_heads: 16  # Changed from 12 to 16 (1024 / 16 = 64 dim per head)
+  mlp_ratio: 4.0
+  num_classes: 6  # Changed from 7 to 6: Tatpurusha(0), Bahuvrihi(1), Dvandva(2), Avyayibhava(3), ROOT(4), No_rel(5)
+  # Full global attention - works well for coarse categories
+
+# =============================================================================
+# Stage 2: Local Attention (Fine-grained Labels)
+# =============================================================================
+stage2:
+  depth: 4  # Fewer layers - local patterns are simpler
+  num_heads: 16  # Changed from 8 to 16 (1024 / 16 = 64 dim per head)
+  mlp_ratio: 4.0
+  num_classes: 56  # Fine-grained subtypes
+  window_size: 5  # Local attention window (2 left + self + 2 right)
+  # Key insight: Fine-grained case relations only need local context
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  # Training strategy
+  strategy: 'joint'  # Options: 'joint', 'sequential', 'stage1_only', 'stage2_only'
+  
+  # Joint training weights
+  stage1_weight: 1.0
+  stage2_weight: 1.0
+  
+  # Sequential training (if strategy='sequential')
+  stage1_epochs: 30
+  stage2_epochs: 20
+  freeze_stage1_for_stage2: True
+  
+  # General training
+  batch_size: 16
+  max_epochs: 50
+  max_steps: 100000
+  
+  # Optimizer
+  optimizer_type: 'AdamW'
+  lr_bert: 2e-5
+  lr_stage1: 1e-4
+  lr_stage2: 1e-4
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  
+  # Scheduler
+  lr_scheduler_type: 'cosine'
+  warmup_steps: 500
+  warmup_ratio: 0.05
+  
+  # Early stopping
+  patience: 10
+  min_delta: 0.0001
+  monitor: 'val_fine_lss'  # Monitor fine-grained LSS
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  data_path: '/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data'
+  granularity: 'Finegrain'
+  use_context: True
+  max_length: 128
+  num_workers: 4
+
+# =============================================================================
+# Label Hierarchy (Fine -> Coarse mapping)
+# =============================================================================
+# This maps each fine-grained label to its coarse category
+# You should populate this based on your actual label set
+label_hierarchy:
+  # Tatpurusa subtypes (Coarse ID: 0)
+  tatpurusa_subtypes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+  
+  # Bahuvrihi subtypes (Coarse ID: 1)
+  bahuvrihi_subtypes: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
+  
+  # Dvandva subtypes (Coarse ID: 2)
+  dvandva_subtypes: [35, 36, 37, 38, 39, 40, 41, 42, 43, 44]
+  
+  # Avyayibhava subtypes (Coarse ID: 3)
+  avyayibhava_subtypes: [45, 46, 47, 48, 49, 50, 51, 52, 53]
+  
+  # Note: Update these lists based on your actual fine-grained label IDs
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output:
+  output_dir: 'saved_models/hierarchical_necti'
+  save_best: True
+  save_last: True
+  log_every_n_steps: 50
+  eval_every_n_epochs: 1
+
+# =============================================================================
+# GPU Configuration
+# =============================================================================
+gpu:
+  use_gpu: True
+  gpus: 1
+  precision: 16  # Mixed precision training
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  logger: 'None'  # Options: 'wandb', 'tensorboard', 'None'
+  project_name: 'hierarchical-diffusion-necti'
+  experiment_name: 'local-refinement-v1'

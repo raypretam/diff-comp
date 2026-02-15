@@ -15,12 +15,12 @@ export TOKENIZERS_PARALLELISM=false
 # Training configuration
 CONFIG_FILE="necti_coarse_xlmr.yaml"
 GRANULARITY="Coarse"
-BACKBONE="xlm-roberta-large"
-DATA_PATH="/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data"
+BACKBONE="FacebookAI/xlm-roberta-large"
+DATA_PATH="/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data"
 
 # Context mode: uncomment one of the following
-USE_CONTEXT=""  # Without Context (default)
-# USE_CONTEXT="--use_context"  # With Context
+# USE_CONTEXT=""  # Without Context (default)
+USE_CONTEXT="--use_context"  # With Context
 
 # Run training
 python trainer_necti.py \
@@ -29,7 +29,7 @@ python trainer_necti.py \
     --backbone ${BACKBONE} \
     --data_path ${DATA_PATH} \
     ${USE_CONTEXT} \
-    --logger wandb \
+    --logger None \
     --batch_size 16 \
     --max_epochs 20 \
     --lr_bert 2e-5 \

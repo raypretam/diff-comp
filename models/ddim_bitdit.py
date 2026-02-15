@@ -116,6 +116,10 @@ class BitDit(nn.Module):
         # Get actual BERT dimension
         self.bert_dim = self.backbone.config.hidden_size
 
+        # Auxiliary Span Consistency Head (Binary: Is Compound vs Not?)
+        self.span_classifier = nn.Linear(self.bert_dim, 2) 
+        self.span_loss_weight = 2.0 # Hyperparameter to tune
+
         # build diffusion
         # 100
         self.timesteps = time_steps
@@ -397,20 +401,12 @@ class BitDit(nn.Module):
         sample_fn = self.p_sample_loop if not self.is_ddim_sampling else self.ddim_sample
         return sample_fn(shape, bert_features, attention_mask)
 
-    def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, seq_labels: torch.tensor,
+    def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, seq_labels: torch.tensor, span_labels: torch.tensor = None,
                 words2pieces: torch.tensor = None, ensemble: bool = False):
         """
-
-        Args:
-            input_ids: [bsz, len]
-            attention_mask: [bsz, len]
-            words2pieces: [bsz, word_len, piece_len]
-            seq_labels: [bsz, len]
-
-        Returns:
-
+        Modified forward pass with Multi-Task Training (Compound + Token + Span)
         """
-        # feature extraction: [bsz, len_piece, d_model]
+        # 1. Feature Extraction
         label_mask = (seq_labels != -100).long()
         bert_output = self.backbone(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
 
@@ -418,34 +414,28 @@ class BitDit(nn.Module):
             min_value = torch.min(bert_output).item()
             bert_output = bert_output.unsqueeze(dim=1).expand(-1, words2pieces.shape[1], -1, -1)
             bert_output = torch.masked_fill(bert_output, words2pieces.eq(0).unsqueeze(dim=-1), min_value)
-            # [bsz, len_word, d_model]
             features, _ = torch.max(bert_output, dim=2)
             lengths = words2pieces.sum(dim=-1).gt(0).sum(dim=-1).cpu()
-
             packed_features = pack_padded_sequence(features, lengths, batch_first=True, enforce_sorted=False)
             packed_outs, (hidden, _) = self.lstm(packed_features)
-            # [bsz, word_len, d_model]
             features = pad_packed_sequence(packed_outs, batch_first=True, total_length=max(lengths))[0]
         else:
-            # [bsz, pieces_len, d_model]
             features = bert_output
 
+        # --- INFERENCE MODE ---
         if not self.training:
-            # Inference mode
+            # (Your existing inference logic matches the file you sent)
             if self.compound_aware and self.label_set is not None:
-                # Compound-aware inference (2-pass approach)
-                # Pass 1: Token-level prediction to get initial labels
+                # Pass 1: Token-level prediction
                 shape = (*features.shape[:2], self.bits.item())
                 results_pass1 = self.sample(shape, features, label_mask)
                 bit_seq_pass1, _ = results_pass1
                 predictions_pass1 = bits_to_decimal(bit_seq_pass1, self.bits.item())
                 
-                # Pass 2: Extract compounds from pass1 predictions and do compound-level inference
                 try:
-                    # Extract compound masks from predicted labels
+                    # Pass 2: Graph/Compound Refinement
                     compound_masks = extract_compound_masks_from_labels(predictions_pass1, self.label_set)
                     
-                    # Pool token features to compound level
                     if self.use_graph_encoder:
                         compound_features, compound_mask = self.compound_encoder(
                             features, compound_masks, predictions_pass1, self.label_set
@@ -453,31 +443,20 @@ class BitDit(nn.Module):
                     else:
                         compound_features, compound_mask = self.compound_encoder(features, compound_masks)
                     
-                    # Sample at compound level
                     compound_shape = (*compound_features.shape[:2], self.bits.item())
                     results_pass2 = self.sample(compound_shape, compound_features, compound_mask)
                     bit_seq_compounds, _ = results_pass2
                     
-                    # Broadcast compound predictions back to tokens
                     bit_seq = self.compound_decoder(bit_seq_compounds, compound_masks)
-                    
-                    # Convert to decimal
                     results = bits_to_decimal(bit_seq, self.bits.item())
-                    path_x = [results]  # Single pass for compound-aware
-                    
-                    return results, path_x
+                    return results, [results] # Return as list for consistency
                     
                 except Exception as e:
-                    print(f"Warning: Compound-aware inference failed ({e}). Using token-level.")
-                    # Fall back to token-level inference
-                    shape = (*features.shape[:2], self.bits.item())
-                    results = self.sample(shape, features, label_mask)
-                    bit_seq, path_x = results
-                    path_x = torch.stack([bits_to_decimal(r, self.bits.item()) for r in path_x], dim=1)
-                    results = bits_to_decimal(bit_seq, self.bits.item())
-                    return results, path_x
+                    # Fallback to token-level
+                    print(f"Fallback to token inference: {e}")
+                    results = bits_to_decimal(bit_seq_pass1, self.bits.item())
+                    return results, [results]
             else:
-                # Standard token-level inference
                 shape = (*features.shape[:2], self.bits.item())
                 results = self.sample(shape, features, label_mask)
                 bit_seq, path_x = results
@@ -485,139 +464,143 @@ class BitDit(nn.Module):
                 results = bits_to_decimal(bit_seq, self.bits.item())
                 return results, path_x
 
+        # --- TRAINING MODE ---
         if self.training:
-            # categorical data to bits [bsz, ]
-            # gold and noised sequence labels
             bits_seq_labels = decimal_to_bits(seq_labels, self.bits)
             bits_seq_labels *= self.scale
             
-            # Compound-aware training: operate at compound level
+            total_loss = 0.0
+            loss_components = {}
+            
+            # TASK 1: Compound-Level Diffusion (The "Refinement" Expert)
             if self.compound_aware and self.label_set is not None:
                 try:
-                    # Extract compound masks from labels
                     compound_masks = extract_compound_masks_from_labels(seq_labels, self.label_set)
-                    # compound_masks: [bsz, max_compounds, seq_len]
                     
-                    # Pool token-level features into compound-level
-                    # If using graph encoder, it will also encode inter-compound dependencies
                     if self.use_graph_encoder:
                         compound_features, compound_mask = self.compound_encoder(
                             features, compound_masks, seq_labels, self.label_set
                         )
                     else:
                         compound_features, compound_mask = self.compound_encoder(features, compound_masks)
-                    # compound_features: [bsz, max_compounds, dim]
                     
-                    # Pool token-level labels: use mean of token labels within each compound
-                    bsz, max_compounds, seq_len = compound_masks.shape
+                    # Pool labels
+                    bsz, max_compounds, _ = compound_masks.shape
                     bits = self.bits.item()
                     compound_labels = torch.zeros(bsz, max_compounds, bits, device=self.device)
-                    
                     for b in range(bsz):
                         for c in range(max_compounds):
                             comp_mask = compound_masks[b, c].bool()
                             if comp_mask.any():
-                                # Average token labels within compound
                                 compound_labels[b, c] = bits_seq_labels[b, comp_mask].mean(dim=0)
                     
-                    # Run diffusion at compound level
-                    noise_compound_labels, ts, noise_comp = self.prepare_targets(compound_labels)
+                    # Diffusion Step
+                    noise_cmp, ts_cmp, noise_err = self.prepare_targets(compound_labels)
                     
-                    # Self-conditioning at compound level
                     self_cond = None
                     if random() < 0.5:
                         with torch.no_grad():
-                            self_cond = self.model_predictions(noise_compound_labels, ts, 
+                            self_cond = self.model_predictions(noise_cmp, ts_cmp, 
                                                                compound_features, compound_mask).pred_x_start
                             self_cond.detach_()
                     
-                    # Predict at compound level
-                    pred_compound = self.model(noise_compound_labels, ts, compound_features, compound_mask, self_cond)
+                    pred_cmp = self.model(noise_cmp, ts_cmp, compound_features, compound_mask, self_cond)
                     
-                    # Broadcast compound predictions back to token level
-                    pred = self.compound_decoder(pred_compound, compound_masks)
+                    # Compute Loss (Project back to tokens for easier sizing)
+                    pred_token_from_cmp = self.compound_decoder(pred_cmp, compound_masks)
                     
-                    # Compute targets at token level
                     targets = bits_seq_labels
                     targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, bits)
+                    
                     if self.objective == 'pred_noise':
-                        # For noise prediction, broadcast compound noise to tokens
-                        noise_tokens = self.compound_decoder(noise_comp, compound_masks)
-                        targets = noise_tokens
-                        
+                        noise_token_from_cmp = self.compound_decoder(noise_err, compound_masks)
+                        targets = noise_token_from_cmp
+
+                    loss_compound = F.mse_loss(pred_token_from_cmp[targets_mask.bool()], targets[targets_mask.bool()])
+                    
+                    total_loss += loss_compound
+                    loss_components['diff_cmp'] = loss_compound.item()
+                    
                 except Exception as e:
-                    print(f"Warning: Compound-aware processing failed ({e}). Falling back to token-level.")
-                    # Fall back to token-level on error
-                    noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
-                    self_cond = None
-                    if random() < 0.5:
-                        with torch.no_grad():
-                            self_cond = self.model_predictions(noise_bits_seq_labels, ts, features, label_mask).pred_x_start
-                            self_cond.detach_()
-                    pred = self.model(noise_bits_seq_labels, ts, features, label_mask, self_cond)
-                    targets = bits_seq_labels
-                    targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
-                    if self.objective == 'pred_noise':
-                        targets = noise
-            else:
-                # Standard token-level training
-                noise_bits_seq_labels, ts, noise = self.prepare_targets(bits_seq_labels)
+                    print(f"Compound training skipped (batch error): {e}")
 
-                self_cond = None
-                if random() < 0.5:
-                    with torch.no_grad():
-                        self_cond = self.model_predictions(noise_bits_seq_labels, ts, features, label_mask).pred_x_start
-                        self_cond.detach_()
-
-                pred = self.model(noise_bits_seq_labels, ts, features, label_mask, self_cond)
-
-                targets = bits_seq_labels
-                targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
-                if self.objective == 'pred_noise':
-                    targets = noise
+            # TASK 2: Token-Level Diffusion (The "Structure Finder")
+            # CRITICAL: We ALWAYS run this, even if compound_aware is True.
+            # This trains Pass 1 so the model can actually find the compounds.
             
-            # Select loss function
-            if self.loss_type == 'l2':
-                diffusion_loss = F.mse_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
-            elif self.loss_type == 'l1':
-                diffusion_loss = F.l1_loss(pred[targets_mask.bool()], targets[targets_mask.bool()])
-            else:
-                raise NotImplementedError(f"Loss type '{self.loss_type}' not implemented")
+            noise_tok, ts_tok, noise_err_tok = self.prepare_targets(bits_seq_labels)
+
+            self_cond_tok = None
+            if random() < 0.5:
+                with torch.no_grad():
+                    self_cond_tok = self.model_predictions(noise_tok, ts_tok, features, label_mask).pred_x_start
+                    self_cond_tok.detach_()
+
+            pred_tok = self.model(noise_tok, ts_tok, features, label_mask, self_cond_tok)
+
+            targets_tok = bits_seq_labels
+            if self.objective == 'pred_noise':
+                targets_tok = noise_err_tok
             
-            # Add contrastive loss if enabled (only at low noise timesteps for cleaner predictions)
-            # Use mean timestep instead of max to allow more contrastive updates
-            if self.use_contrastive and ts.float().mean() < self.timesteps * 0.3:
-                # Convert bit predictions back to continuous embeddings for contrastive learning
-                # pred: [bsz, seq_len, bits]
-                # We use the predicted bits as embeddings for contrastive learning
-                # Only applied when mean(ts) < 30% of total timesteps (cleaner predictions)
-                contrastive_loss = self.contrastive_loss_fn(
-                    embeddings=pred,  # Use bit predictions as embeddings
-                    labels=seq_labels,  # Original categorical labels
-                    mask=label_mask  # Attention mask
+            targets_mask = label_mask.unsqueeze(dim=-1).expand(-1, -1, self.bits.item())
+            loss_token = F.mse_loss(pred_tok[targets_mask.bool()], targets_tok[targets_mask.bool()])
+            
+            total_loss += loss_token
+            loss_components['diff_tok'] = loss_token.item()
+
+            # Contrastive Loss (Optional)
+            if self.use_contrastive and ts_tok.float().mean() < self.timesteps * 0.3:
+                 contrastive_l = self.contrastive_loss_fn(pred_tok, seq_labels, label_mask)
+                 total_loss += self.contrastive_weight * contrastive_l
+                 loss_components['contrastive'] = contrastive_l.item()
+
+            # TASK 3: Span Classification (Your New Auxiliary Head)
+            if span_labels is not None:
+                # Predict Span/Non-Span from raw BERT features
+                span_logits = self.span_classifier(features) # (Batch, Len, 2)
+                
+                active_loss = label_mask.view(-1) == 1
+                active_logits = span_logits.view(-1, 2)
+                active_labels = span_labels.view(-1)
+                
+                # Only calculate loss on valid tokens
+                span_loss = F.cross_entropy(
+                    active_logits[active_loss], 
+                    active_labels[active_loss]
                 )
                 
-                # Combined loss (weighted sum)
-                total_loss = diffusion_loss + self.contrastive_weight * contrastive_loss
+                total_loss += (self.span_loss_weight * span_loss)
+                loss_components['span'] = span_loss.item()
+
+            self.last_losses = loss_components
+            return total_loss
+            
+            # if span_labels is not None:
+            #     # Predict Span/Non-Span from raw BERT features
+            #     span_logits = self.span_classifier(features) # (Batch, Len, 2)
                 
-                # Store losses for logging (accessible via model.last_losses)
-                self.last_losses = {
-                    'total': total_loss.item(),
-                    'diffusion': diffusion_loss.item(),
-                    'contrastive': contrastive_loss.item(),
-                    'ts_mean': ts.float().mean().item()
-                }
+            #     # Cross Entropy Loss
+            #     # Flatten for loss calculation
+            #     active_loss = attention_mask.view(-1) == 1
+            #     active_logits = span_logits.view(-1, 2)
+            #     active_labels = span_labels.view(-1)
                 
-                return total_loss
-            else:
-                # No contrastive loss applied this batch
-                self.last_losses = {
-                    'total': diffusion_loss.item(),
-                    'diffusion': diffusion_loss.item(),
-                    'contrastive': 0.0,
-                    'ts_mean': ts.float().mean().item()
-                }
-                return diffusion_loss
+            #     span_loss = F.cross_entropy(
+            #         active_logits[active_loss], 
+            #         active_labels[active_loss]
+            #     )
+                
+            #     # Combine Losses
+            #     total_loss = diffusion_loss + (self.span_loss_weight * span_loss)
+                
+            #     # Store losses for logging (accessible via model.last_losses)
+            #     self.last_losses = {
+            #         'total': total_loss.item(),
+            #         'diffusion': diffusion_loss.item(),
+            #         'span': span_loss.item(),
+            #         'ts_mean': ts.float().mean().item()
+            #     }
+            #     return total_loss
 
     def prepare_targets(self, gold_seq_labels):
         """

@@ -15,7 +15,7 @@ export TOKENIZERS_PARALLELISM=false
 # Training configuration
 CONFIG_FILE="necti_finegrain_xlmr.yaml"
 GRANULARITY="Finegrain"
-BACKBONE="google/muril-base-cased"  # Changed from base to large (1024 dims)
+BACKBONE="FacebookAI/xlm-roberta-large"  # Changed from base to large (1024 dims)
 DATA_PATH="/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data"
 
 # Context mode: uncomment one of the following
@@ -23,7 +23,7 @@ DATA_PATH="/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data"
 USE_CONTEXT="--use_context"  # With Context
 
 # Run training
-CUDA_VISIBLE_DEVICES=1 python trainer_necti.py \
+CUDA_VISIBLE_DEVICES=0 python trainer_necti.py \
     --config_file ${CONFIG_FILE} \
     --granularity ${GRANULARITY} \
     --backbone ${BACKBONE} \
@@ -31,13 +31,13 @@ CUDA_VISIBLE_DEVICES=1 python trainer_necti.py \
     ${USE_CONTEXT} \
     --logger none \
     --batch_size 16 \
-    --max_epochs 50 \
+    --max_epochs 200 \
     --lr_bert 2e-5 \
     --lr_other 5e-4 \
     --num_workers 4 \
     --max_length 256 \
-    --time_steps 5000 \
-    --sampling_steps 100 \
-    --depth 12
+    --time_steps 1000 \
+    --sampling_steps 10 \
+    --depth 8
 
 echo "Training completed!"

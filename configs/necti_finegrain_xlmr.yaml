@@ -6,22 +6,22 @@
 base: 'ner'
 dataset: 'necti_finegrain'
 num_classes: 54  # Will be adjusted automatically based on data
-backbone: 'google/muril-base-cased'  # XLM-R encoder
-time_steps: 5000
+backbone: 'FacebookAI/xlm-roberta-large'  # XLM-R encoder
+time_steps: 1000
 sampling_steps: 100  # INCREASED from 10 to 50 for finer generation
 ddim_sampling_eta: 0.2
 self_condition: True
-snr_scale: 1.0  # CRITICAL: Increased to 1.0 to prevent ROOT:Comp_root collapse (was 0.1)
-dim_model: 768  # XLM-R hidden size
+snr_scale: 0.5  # CRITICAL: Increased to 1.0 to prevent ROOT:Comp_root collapse (was 0.1)
+dim_model: 1024  # XLM-R hidden size
 dim_time: 512  # INCREASED from 256 for richer temporal embeddings
 depth: 12  # INCREASED from 6 to 12 (match coarse model capacity despite 10x more classes)
-objective: 'pred_x0'
+objective: 'pred_x0' # Changed from pred_x0 to pred_noise for better stability with more steps
 noise_schedule: 'cosine'  # CHANGED from linear to cosine (better for more steps)
 loss_type: 'l2'  # Options: 'l2', 'l1'
-compound_aware: True  # Enable compound-level diffusion (NOW WITH WORKING INFERENCE!)
+compound_aware: False  # Enable compound-level diffusion (NOW WITH WORKING INFERENCE!)
 compound_pooling: 'mean'  # Pooling method: 'mean', 'max', 'attention', 'lstm'
-use_graph_encoder: True  # Use Graph-Aware Encoder to model dependencies BETWEEN compounds
-num_gnn_layers: 2  # Number of GNN layers for inter-compound message passing
+use_graph_encoder: False  # Use Graph-Aware Encoder to model dependencies BETWEEN compounds
+num_gnn_layers: 3  # Number of GNN layers for inter-compound message passing
 add_lstm: False  # ENABLED LSTM for better sequence modeling
 freeze_bert: False
 max_length: 256
@@ -30,7 +30,7 @@ ensemble: False  # ENABLED for multiple predictions
 
 # Contrastive Learning Configuration
 use_contrastive: False  # Enable InfoNCE contrastive learning
-contrastive_weight: 0.05  # Weight for contrastive loss (relative to diffusion loss)
+contrastive_weight: 0.1  # Weight for contrastive loss (relative to diffusion loss)
 contrastive_temp: 0.07  # Temperature for InfoNCE (lower = harder negatives)
 contrastive_type: 'simple'  # 'simple' or 'hierarchical'
 

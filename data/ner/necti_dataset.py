@@ -53,43 +53,16 @@ class NeCTILabelSet:
         print(f"Labels: {self._labelset}")
     
     def _extract_labels_from_file(self, filepath: str) -> set:
-        """Extract RELATIVE positional labels (e.g., '+1:Tatpurusha')"""
+        """Extract unique compound type labels from CoNLL-U format file"""
         labels = set()
         with open(filepath, 'r', encoding='utf-8') as f:
-            sentences = []
-            current_sent = []
             for line in f:
                 line = line.strip()
-                if not line:
-                    if current_sent:
-                        # Process the buffered sentence to get relative labels
-                        for item in current_sent:
-                            idx = item['idx']
-                            head = item['head']
-                            rel = item['rel']
-                            
-                            # Logic for Relative Encoding
-                            if rel == 'Comp_root': # or head == 0
-                                label = "ROOT:Comp_root"
-                            elif head == 0: # Root of sentence
-                                label = "ROOT:root"
-                            else:
-                                dist = head - idx
-                                # Optional: Cap distance to avoid sparse labels (e.g., >5 becomes +Far)
-                                # if dist > 5: dist = "Far"
-                                # elif dist < -5: dist = "NegFar"
-                                label = f"{dist}:{rel}"
-                                
-                            labels.add(label)
-                        current_sent = []
-                elif not line.startswith('#'):
+                if line and not line.startswith('#'):
                     parts = line.split('\t')
                     if len(parts) >= 8:
-                        current_sent.append({
-                            'idx': int(parts[0]), 
-                            'head': int(parts[6]), 
-                            'rel': parts[7]
-                        })
+                        relation = parts[7]  # Eighth column is the relation/compound type
+                        labels.add(relation)
         return labels
     
     def label2id(self, label: str) -> int:
@@ -126,7 +99,7 @@ class NeCTIDataset(Dataset):
         self.label_set = label_set
         self.mode = mode
         self.use_context = use_context
-        self.granularity = label_set.granularity
+        
         # Construct file path
         context_dir = 'With Context' if use_context else 'Without Context'
         filename = f"{label_set.granularity}_{mode}_san"
@@ -158,10 +131,10 @@ class NeCTIDataset(Dataset):
                     parts = line.split('\t')
                     if len(parts) >= 8:
                         idx = int(parts[0])
-                        token = parts[1].split('_')[0]  # Column 1: FORM - strip compound class suffix (e.g., "वीत_C4" -> "वीत")
-                        comp_label = parts[3]  # Column 3: Compound label (Comp2, Comp3, CompNo, etc.)
-                        head_idx = int(parts[6])  # Column 6: Head
-                        relation = parts[7]  # Column 7: DEPS or relation type (Comp_root, Bs5, Di, etc.)
+                        token = parts[1].split('_')[0]  # Strip compound span length suffix after underscore
+                        comp_label = parts[3]  # Comp2, Comp3, CompNo, etc.
+                        head_idx = int(parts[6])
+                        relation = parts[7]  # Compound type or No_rel/Comp_root
                         
                         current_data.append({
                             'idx': idx,
@@ -189,32 +162,15 @@ class NeCTIDataset(Dataset):
             return None
         
         tokens = [item['token'] for item in sentence_data]
-    # --- NEW LABEL GENERATION LOGIC ---
-        encoded_labels = []
-        for item in sentence_data:
-            idx = item['idx']
-            head = item['head_idx']
-            rel = item['relation']
-            
-            if rel == 'Comp_root':
-                label = "ROOT:Comp_root"
-            elif head == 0:
-                label = "ROOT:root"
-            else:
-                # Calculate distance: Head Index - Current Index
-                # Example: "washing(1) machine(2)" -> washing head is 2. Dist = 2-1 = +1
-                dist = head - idx
-                label = f"{dist}:{rel}"
-                
-            encoded_labels.append(label)
-        # ----------------------------------
+        # Labels are the relation types (compound types to predict)
+        relation_labels = [item['relation'] for item in sentence_data]
         
         # Extract compound spans and types
         compounds = self._extract_compounds(sentence_data)
         
         return {
             'tokens': tokens,
-            'relation_labels': encoded_labels,
+            'relation_labels': relation_labels,
             'compounds': compounds
         }
     
@@ -253,9 +209,9 @@ class NeCTIDataset(Dataset):
                 comp_level = root['comp_label']
                 
                 # Get tokens in slp1 and transliterate to Devanagari
-                tokens = [t['token'] for t in compound_tokens]
-                # devanagari_tokens = [sanscript.transliterate(token, sanscript.SLP1, sanscript.DEVANAGARI) 
-                #                     for token in slp1_tokens]
+                slp1_tokens = [t['token'] for t in compound_tokens]
+                devanagari_tokens = [sanscript.transliterate(token, sanscript.SLP1, sanscript.DEVANAGARI) 
+                                    for token in slp1_tokens]
                 
                 compounds.append({
                     'start': start_idx,
@@ -263,8 +219,8 @@ class NeCTIDataset(Dataset):
                     'type': compound_type,
                     'level': comp_level,
                     'internal_types': list(comp_types),
-                    'tokens': tokens,
-                    # 'tokens_devanagari': devanagari_tokens
+                    'tokens': slp1_tokens,
+                    'tokens_devanagari': devanagari_tokens
                 })
         
         return compounds
@@ -321,8 +277,6 @@ class NeCTIDataset(Dataset):
         
         # Convert relation_labels to label IDs
         labels = [self.label_set.label2id(l) for l in relation_labels]
-
-        # print(f"Returning item {item}: {sentence} tokens, {labels} labels, {compounds} compounds")
         
         return {
             'tokens': sentence,
@@ -334,13 +288,10 @@ class NeCTIDataset(Dataset):
 class NeCTICollator:
     """Collator for NeCTI dataset compatible with DiffusionSL"""
     
-    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 256, add_lstm: bool = False, label_set=None):
+    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 256, add_lstm: bool = False):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.add_lstm = add_lstm
-        self.label_set = label_set
-        # Get ROOT:Comp_root ID to mask it from loss (it's 29% of tokens and causes collapse)
-        self.root_comp_id = label_set.label2id('ROOT:Comp_root') if label_set else None
     
     def __call__(self, batch):
         # Extract data from batch items
@@ -374,12 +325,7 @@ class NeCTICollator:
                     if i == 0 or temp[i] != temp[i - 1]:
                         # First subword of a word gets the label
                         if temp[i] < len(las):
-                            label_id = las[temp[i]]
-                            # CRITICAL FIX: Mask ROOT:Comp_root from loss (causes mode collapse)
-                            if label_id == self.root_comp_id:
-                                seql.append(-100)  # Exclude from loss like padding
-                            else:
-                                seql.append(label_id)
+                            seql.append(las[temp[i]])
                         else:
                             seql.append(-100)
                     else:
@@ -395,25 +341,64 @@ class NeCTICollator:
             'attention_mask': torch.as_tensor(attention_mask, dtype=torch.long),
             'seq_labels': torch.as_tensor(seq_labels, dtype=torch.long),
             'compounds': compounds,  # Keep compound span information
-            'word_ids': word_ids,  # Keep word-to-token mapping
-            'sentences': sentences  # Keep original sentence tokens
+            'word_ids': word_ids  # Keep word-to-token mapping
         }
         
         # Add words2pieces mapping if LSTM is used
         if self.add_lstm:
-            # words2pieces should map word index to the first subword piece index
-            max_word_len = max(len(item['words']) for item in batch)
-            
-            words2pieces_list = []
-            for item in batch:
-                w2p = torch.zeros(max_word_len, dtype=torch.long)
-                # Only fill in valid positions
-                num_words = len(item['words'])
-                for i in range(num_words):
-                    if i < len(item.get('words2pieces', [])):
-                        w2p[i] = item['words2pieces'][i]
-                words2pieces_list.append(w2p)
-            
-            output_dict['words2pieces'] = torch.stack(words2pieces_list)
+            words2pieces = self._create_words2pieces_mapping(word_ids, input_ids.shape[1])
+            result['words2pieces'] = words2pieces
         
         return result
+    
+    def _create_words2pieces_mapping(self, word_ids_batch: List[List[int]], max_seq_len: int) -> torch.Tensor:
+        """
+        Create a mapping tensor from words to their subword pieces.
+        
+        Args:
+            word_ids_batch: List of word_ids for each sample in batch
+            max_seq_len: Maximum sequence length (number of pieces)
+        
+        Returns:
+            words2pieces: Tensor of shape [batch_size, max_words, max_pieces_per_word]
+                         where words2pieces[b, w, p] = 1 if piece p belongs to word w in batch b
+        """
+        batch_size = len(word_ids_batch)
+        
+        # Find max number of words and max pieces per word
+        max_words = 0
+        max_pieces_per_word = 0
+        
+        word_to_pieces_list = []
+        for word_ids in word_ids_batch:
+            # Group pieces by word
+            word_to_pieces = {}
+            for piece_idx, word_idx in enumerate(word_ids):
+                if word_idx is not None:  # Skip special tokens
+                    if word_idx not in word_to_pieces:
+                        word_to_pieces[word_idx] = []
+                    word_to_pieces[word_idx].append(piece_idx)
+            
+            word_to_pieces_list.append(word_to_pieces)
+            
+            if word_to_pieces:
+                max_words = max(max_words, max(word_to_pieces.keys()) + 1)
+                max_pieces_per_word = max(max_pieces_per_word, 
+                                         max(len(pieces) for pieces in word_to_pieces.values()))
+        
+        # Handle edge case where there are no words
+        if max_words == 0:
+            max_words = 1
+        if max_pieces_per_word == 0:
+            max_pieces_per_word = 1
+        
+        # Create tensor [batch_size, max_words, max_pieces_per_word]
+        words2pieces = torch.zeros(batch_size, max_words, max_pieces_per_word, dtype=torch.long)
+        
+        for batch_idx, word_to_pieces in enumerate(word_to_pieces_list):
+            for word_idx, piece_indices in word_to_pieces.items():
+                for local_piece_idx, global_piece_idx in enumerate(piece_indices):
+                    if local_piece_idx < max_pieces_per_word:
+                        words2pieces[batch_idx, word_idx, local_piece_idx] = global_piece_idx
+        
+        return words2pieces

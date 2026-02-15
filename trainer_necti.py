@@ -21,6 +21,7 @@ import numpy as np
 import json
 
 from data_balancing import BalancedDataLoader, LabelWeightCalculator
+from models.hierarchial_diffusion import HierarchicalDiffusionNeCTI
 
 
 class NeCTITrainer:
@@ -128,7 +129,8 @@ class NeCTITrainer:
         )
         
         # Create data loaders (using standard sampling for all splits)
-        self.train_dataloader = self._get_dataloader('train', self.args.batch_size, balanced=False)
+        # FIXED: Ensure balanced=True for training
+        self.train_dataloader = self._get_dataloader('train', self.args.batch_size, balanced=True)
         self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size, balanced=False)
         self.test_dataloader = self._get_dataloader('test', self.args.batch_size, balanced=False)
         
@@ -164,15 +166,6 @@ class NeCTITrainer:
     def _get_dataloader(self, mode: str, bsz: int, balanced: bool = False):
         """
         Create dataloader for specified split.
-        
-        Args:
-            mode: 'train', 'dev', 'test', or 'ood'
-            bsz: Batch size
-            balanced: If True, use balanced sampling (for training data)
-        
-        Returns:
-            If balanced: (dataloader, sampler)
-            If not balanced: dataloader
         """
         dataset = NeCTIDataset(self.dataset_path, mode, self.label_set, use_context=self.args.use_context)
         
@@ -198,7 +191,8 @@ class NeCTITrainer:
                     for label_id, weight in sampler.weight_calc.label_weights.items()
                 }, f, indent=2)
             
-            return dataloader, sampler
+            # CRITICAL FIX: Return ONLY dataloader, not (dataloader, sampler)
+            return dataloader
         else:
             # Standard dataloader for eval data
             shuffle = (mode == 'train')
@@ -292,10 +286,9 @@ class NeCTITrainer:
 
     def decode_relative_to_spans(self, token_ids: List[int], relative_tags: List[str]) -> List[Tuple[int, int, str]]:
         """
-        Decodes Relative Tags (e.g. '+1:Tatpurusha') into Span Tuples (start, end, label).
-        Includes cycle detection to prevent recursion errors.
+        Decodes Relative Tags with HEURISTIC REPAIR.
+        Fixes '0:Bv' (Self-Loop) bugs by forcing adjacent attachment.
         """
-        # 1. Build Adjacency List (Head -> Children)
         children = {tid: [] for tid in token_ids}
         node_relations = {} 
         
@@ -303,6 +296,7 @@ class NeCTITrainer:
             if i >= len(token_ids): break
             current_id = token_ids[i]
             
+            # 1. Handle Roots
             if tag in ["ROOT:root", "ROOT:Comp_root"]:
                 node_relations[current_id] = "Comp_root"
                 continue
@@ -312,12 +306,20 @@ class NeCTITrainer:
             try:
                 dist_str, rel = tag.split(":", 1)
                 dist = int(dist_str)
+                
+                # --- HEURISTIC REPAIR START ---
+                # If model predicts Self-Loop (dist=0), force Right-Attachment (+1)
+                # This turns "Garbage" into a "Valid Baseline Guess"
+                if dist == 0:
+                    dist = 1 
+                # -------------------------------
+
                 head_list_idx = i + dist
                 
                 if 0 <= head_list_idx < len(token_ids):
                     head_id = token_ids[head_list_idx]
                     
-                    # Prevent immediate self-loops
+                    # Cycle check (prevent 1->2 and 2->1)
                     if head_id == current_id:
                         continue
                         
@@ -326,29 +328,19 @@ class NeCTITrainer:
             except ValueError:
                 continue
 
-        # 2. Extract Spans (Cycle-Safe)
+        # 2. Extract Spans (Standard Logic)
         spans = []
         subtree_ranges = {} 
 
         def get_subtree_range(node_id, current_path):
-            # If already computed, return it
-            if node_id in subtree_ranges: 
-                return subtree_ranges[node_id]
+            if node_id in subtree_ranges: return subtree_ranges[node_id]
+            if node_id in current_path: return (node_id, node_id)
             
-            # CYCLE DETECTION: If we see a node currently in our recursion stack, stop.
-            if node_id in current_path:
-                return (node_id, node_id)
-            
-            # Add to current path
             current_path.add(node_id)
-            
             indices = [node_id]
             for child in children[node_id]:
-                # Recursive call with path tracking
                 c_min, c_max = get_subtree_range(child, current_path)
                 indices.extend([c_min, c_max])
-            
-            # Remove from path before returning (backtracking)
             current_path.remove(node_id)
             
             res = (min(indices), max(indices))
@@ -359,14 +351,15 @@ class NeCTITrainer:
             kids = children[head_id]
             if not kids: continue
             
-            # Collect relations of direct children
+            # Use the most frequent relation among children as the span label
             child_rels = [node_relations.get(k, '') for k in kids]
             valid_rels = [r for r in child_rels if r not in ['No_rel', 'root', 'Comp_root', '']]
             
             if valid_rels:
-                # Start traversal with an empty path set
                 s_min, s_max = get_subtree_range(head_id, set())
-                primary_label = valid_rels[0]
+                # Pick most common relation type (Voter method)
+                from collections import Counter
+                primary_label = Counter(valid_rels).most_common(1)[0][0]
                 spans.append((s_min, s_max, primary_label))
 
         return spans
@@ -395,11 +388,15 @@ class NeCTITrainer:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 seq_labels = batch['seq_labels'].to(self.device)
+                # NEW: Get span labels (aligned with subwords)
+                span_labels = batch.get('seq_span_labels', None)
+                if span_labels is not None:
+                    span_labels = span_labels.to(self.device)
                 words2pieces = batch.get('words2pieces', None)
                 if words2pieces is not None:
                     words2pieces = words2pieces.to(self.device)
                 
-                loss = self.model(input_ids, attention_mask, seq_labels, words2pieces)
+                loss = self.model(input_ids, attention_mask, seq_labels, span_labels, words2pieces)
                 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -429,11 +426,18 @@ class NeCTITrainer:
                     'lr_other': f'{current_lr_other:.2e}'
                 }
                 
-                # Add separate loss components if using contrastive learning
+                # ---- MODIFIED: Handle new loss keys safely ----
                 if hasattr(self.model, 'last_losses') and self.model.last_losses:
-                    postfix_dict['diff'] = f"{self.model.last_losses['diffusion']:.4f}"
-                    postfix_dict['cont'] = f"{self.model.last_losses['contrastive']:.4f}"
-                    postfix_dict['t_avg'] = f"{self.model.last_losses['ts_mean']:.0f}"
+                    # Token diffusion is 'diff_tok' in new model, 'diffusion' in old
+                    d_loss = self.model.last_losses.get('diff_tok', self.model.last_losses.get('diffusion', 0.0))
+                    postfix_dict['diff'] = f"{d_loss:.4f}"
+                    
+                    if 'diff_cmp' in self.model.last_losses:
+                         postfix_dict['cmp'] = f"{self.model.last_losses['diff_cmp']:.4f}"
+                    
+                    if 'span' in self.model.last_losses:
+                        postfix_dict['span'] = f"{self.model.last_losses['span']:.4f}"
+                # -----------------------------------------------
                 
                 pbar.set_postfix(postfix_dict)
                 
@@ -447,12 +451,18 @@ class NeCTITrainer:
                     }
                     # Add separate loss components if available
                     if hasattr(self.model, 'last_losses') and self.model.last_losses:
-                        log_dict['train/diffusion_loss'] = self.model.last_losses['diffusion']
-                        log_dict['train/contrastive_loss'] = self.model.last_losses['contrastive']
-                        log_dict['train/ts_mean'] = self.model.last_losses['ts_mean']
-                        # Track contrastive application rate
-                        contrastive_active = 1.0 if self.model.last_losses['contrastive'] > 0 else 0.0
-                        log_dict['train/contrastive_active'] = contrastive_active
+                        # Safely log token diffusion
+                        log_dict['train/diffusion_loss'] = self.model.last_losses.get('diff_tok', self.model.last_losses.get('diffusion', 0.0))
+                        
+                        if 'diff_cmp' in self.model.last_losses:
+                            log_dict['train/compound_loss'] = self.model.last_losses['diff_cmp']
+                            
+                        if 'span' in self.model.last_losses:
+                            log_dict['train/span_loss'] = self.model.last_losses['span']
+                            
+                        if 'contrastive' in self.model.last_losses:
+                             log_dict['train/contrastive_loss'] = self.model.last_losses['contrastive']
+
                     wandb.log(log_dict)
             
             avg_train_loss = train_loss / train_steps
@@ -672,33 +682,6 @@ class NeCTITrainer:
         print(f"{'='*60}\n")
         
         return results
-    
-    # def _calculate_metrics(self, predictions: List[int], labels: List[int]) -> Dict[str, float]:
-    #     """Calculate precision, recall, and F1 score"""
-    #     predictions = np.array(predictions)
-    #     labels = np.array(labels)
-        
-    #     # For compound identification: treat No_rel and root as negative class
-    #     no_rel_id = self.label_set.label2id('No_rel')
-    #     root_id = self.label_set.label2id('root')
-        
-    #     # Binary classification: compound vs non-compound
-    #     pred_is_compound = (predictions != no_rel_id) & (predictions != root_id)
-    #     label_is_compound = (labels != no_rel_id) & (labels != root_id)
-        
-    #     tp = np.sum(pred_is_compound & label_is_compound)
-    #     fp = np.sum(pred_is_compound & ~label_is_compound)
-    #     fn = np.sum(~pred_is_compound & label_is_compound)
-        
-    #     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    #     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    #     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        
-    #     return {
-    #         'precision': precision,
-    #         'recall': recall,
-    #         'f1': f1
-    #     }
     
     def _save_model(self, epoch, f1_score, is_best=False):
         """Save model checkpoint"""
