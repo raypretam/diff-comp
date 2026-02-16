@@ -81,7 +81,7 @@ training:
   # Early stopping
   patience: 10
   min_delta: 0.0001
-  monitor: 'val_fine_lss'  # Monitor fine-grained LSS
+  monitor: 'val_USS'  # Monitor USS (Unlabeled Span Score)
 
 # =============================================================================
 # Data Configuration
@@ -135,6 +135,6 @@ gpu:
 # Logging
 # =============================================================================
 logging:
-  logger: 'None'  # Options: 'wandb', 'tensorboard', 'None'
+  logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
   project_name: 'hierarchical-diffusion-necti'
   experiment_name: 'local-refinement-v1'

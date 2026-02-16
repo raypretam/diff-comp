@@ -32,7 +32,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
-from torch.cuda.amp import GradScaler, autocast
+# GradScaler and autocast are used via torch.amp API (non-deprecated)
 
 from transformers import AutoTokenizer
 from tqdm import tqdm
@@ -362,16 +362,12 @@ class HierarchicalTrainer:
                 
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training']['max_grad_norm'])
                 
-                # Check gradient norms for debugging
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training']['max_grad_norm'])
-                if torch.isnan(grad_norm) or torch.isinf(grad_norm):
-                    print(f"Warning: Invalid gradient norm {grad_norm.item():.4f} at step {self.global_step}, skipping batch")
-                    continue
-                
+                # scaler.step() automatically skips optimizer.step() if grads contain inf/nan
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.scheduler.step()  # Moved after optimizer.step()
+                self.scheduler.step()
             else:
                 if stage == 'both':
                     losses = self.model(
@@ -440,7 +436,18 @@ class HierarchicalTrainer:
     
     @torch.no_grad()
     def evaluate(self) -> Dict[str, float]:
-        """Evaluate on dev set"""
+        """
+        Evaluate on dev set using USS, LSS, and EM metrics.
+        
+        Labels are plain relation codes (T6, BvS, Comp_root, No_rel) — no distance prefix.
+        Compounds are contiguous runs of non-No_rel tokens, each ending at Comp_root.
+        
+        USS = F1 on compound span boundaries (start, end)
+        LSS = F1 on compound span tuples (start, end, label)
+        EM  = fraction of true compounds exactly matched
+        """
+        from collections import Counter
+        
         self.model.eval()
         
         all_coarse_preds = []
@@ -448,39 +455,180 @@ class HierarchicalTrainer:
         all_fine_preds = []
         all_fine_labels = []
         
+        true_compounds_all = []
+        pred_compounds_all = []
+        
         for batch in tqdm(self.dev_loader, desc='Evaluating'):
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
-            fine_labels = batch['seq_labels'].to(self.device)  # Changed from 'labels' to 'seq_labels'
+            fine_labels = batch['seq_labels'].to(self.device)
             coarse_labels = self._get_coarse_labels(fine_labels)
             
             # Inference
             coarse_preds, fine_preds = self.model.inference(input_ids, attention_mask)
             
-            # Collect predictions (only valid positions)
+            # Valid mask: non-padded, non-special-token positions (one per word)
             mask = fine_labels != -100
             
-            all_coarse_preds.extend(coarse_preds[mask].cpu().numpy().tolist())
-            all_coarse_labels.extend(coarse_labels[mask].cpu().numpy().tolist())
-            all_fine_preds.extend(fine_preds[mask].cpu().numpy().tolist())
-            all_fine_labels.extend(fine_labels[mask].cpu().numpy().tolist())
+            # Process sentence-by-sentence
+            for i in range(input_ids.shape[0]):
+                sent_mask = mask[i]  # [seq_len] boolean
+                if sent_mask.sum() == 0:
+                    continue
+                
+                # Use mask to get exactly one prediction per word (correct alignment)
+                pred_ids = fine_preds[i][sent_mask].cpu().tolist()
+                true_ids = fine_labels[i][sent_mask].cpu().tolist()
+                coarse_pred_ids = coarse_preds[i][sent_mask].cpu().tolist()
+                coarse_true_ids = coarse_labels[i][sent_mask].cpu().tolist()
+                
+                # Flat accuracy tracking
+                all_fine_preds.extend(pred_ids)
+                all_fine_labels.extend(true_ids)
+                all_coarse_preds.extend(coarse_pred_ids)
+                all_coarse_labels.extend(coarse_true_ids)
+                
+                # Convert IDs to label names
+                pred_names = [self.fine_label_set.id2label(pid) if 0 <= pid < len(self.fine_label_set) else "No_rel"
+                              for pid in pred_ids]
+                true_names = [self.fine_label_set.id2label(tid) if 0 <= tid < len(self.fine_label_set) else "No_rel"
+                              for tid in true_ids]
+                
+                # Extract compound spans from contiguous label sequences
+                pred_compounds = self._extract_compounds_from_labels(pred_names)
+                true_compounds = self._extract_compounds_from_labels(true_names)
+                
+                pred_compounds_all.append(pred_compounds)
+                true_compounds_all.append(true_compounds)
         
-        # Calculate metrics
-        coarse_acc = np.mean(np.array(all_coarse_preds) == np.array(all_coarse_labels))
-        fine_acc = np.mean(np.array(all_fine_preds) == np.array(all_fine_labels))
+        # Flat accuracy
+        coarse_acc = np.mean(np.array(all_coarse_preds) == np.array(all_coarse_labels)) if all_coarse_labels else 0.0
+        fine_acc = np.mean(np.array(all_fine_preds) == np.array(all_fine_labels)) if all_fine_labels else 0.0
         
-        # USS: Unlabeled Span Score (structure only)
-        # LSS: Labeled Span Score (structure + label)
-        # For simplicity, using accuracy as proxy. Replace with your actual USS/LSS computation.
+        # Span-based metrics
+        uss = self._compute_span_f1(true_compounds_all, pred_compounds_all, labeled=False)
+        lss = self._compute_span_f1(true_compounds_all, pred_compounds_all, labeled=True)
+        em = self._compute_exact_match(true_compounds_all, pred_compounds_all)
         
         metrics = {
             'coarse_acc': coarse_acc,
             'fine_acc': fine_acc,
-            'coarse_lss': coarse_acc,  # Placeholder - use actual LSS computation
-            'fine_lss': fine_acc,  # Placeholder - use actual LSS computation
+            'USS': uss,
+            'LSS': lss,
+            'EM': em,
         }
         
         return metrics
+    
+    def _extract_compounds_from_labels(self, labels: List[str]) -> List[Tuple[int, int, str]]:
+        """
+        Extract compound spans from a word-level label sequence.
+        
+        A compound is a contiguous run of non-No_rel/non-root tokens.
+        Comp_root marks the end of each compound within a run.
+        The compound label is the majority vote of member labels (excluding Comp_root).
+        
+        Example:
+            labels = ['T6', 'T6', 'Comp_root', 'No_rel', 'Bs6', 'K1', 'Comp_root']
+            → [(0, 2, 'T6'), (4, 6, 'K1')]  (or Bs6 depending on count)
+        """
+        from collections import Counter
+        
+        NON_COMPOUND = {'No_rel', 'root', '_'}
+        compounds = []
+        i = 0
+        n = len(labels)
+        
+        while i < n:
+            if labels[i] not in NON_COMPOUND:
+                # Start of a compound region
+                region_start = i
+                
+                # Collect tokens until we hit No_rel/root or end
+                while i < n and labels[i] not in NON_COMPOUND:
+                    i += 1
+                region_end = i - 1  # inclusive, last non-No_rel token
+                
+                # Split this region into individual compounds at Comp_root boundaries
+                comp_start = region_start
+                member_labels = []
+                
+                for j in range(region_start, region_end + 1):
+                    if labels[j] == 'Comp_root':
+                        # This Comp_root ends a compound
+                        if member_labels:
+                            label = Counter(member_labels).most_common(1)[0][0]
+                        else:
+                            label = 'Comp_root'
+                        compounds.append((comp_start, j, label))
+                        comp_start = j + 1
+                        member_labels = []
+                    else:
+                        member_labels.append(labels[j])
+                
+                # Handle remaining tokens after last Comp_root (partial compound)
+                if comp_start <= region_end and member_labels:
+                    label = Counter(member_labels).most_common(1)[0][0]
+                    compounds.append((comp_start, region_end, label))
+            else:
+                i += 1
+        
+        return compounds
+    
+    def _compute_span_f1(self, true_all: List[List[Tuple]], pred_all: List[List[Tuple]], labeled: bool = False) -> float:
+        """
+        Compute F1 score over compound spans.
+        
+        USS (labeled=False): matches on (start, end) boundaries only
+        LSS (labeled=True): matches on (start, end, label) tuples
+        """
+        total_correct = 0
+        total_pred = 0
+        total_true = 0
+        
+        for true_comps, pred_comps in zip(true_all, pred_all):
+            if labeled:
+                true_set = set(true_comps)
+                pred_set = set(pred_comps)
+            else:
+                true_set = set((s, e) for s, e, _ in true_comps)
+                pred_set = set((s, e) for s, e, _ in pred_comps)
+            
+            total_correct += len(true_set & pred_set)
+            total_pred += len(pred_set)
+            total_true += len(true_set)
+        
+        p = total_correct / total_pred if total_pred > 0 else 0.0
+        r = total_correct / total_true if total_true > 0 else 0.0
+        f1 = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+        return f1
+    
+    def _compute_exact_match(self, true_all: List[List[Tuple]], pred_all: List[List[Tuple]]) -> float:
+        """
+        Compute Exact Match: fraction of true compounds that are exactly matched.
+        Matches Eval_USS_LSS.py semantics: counts how many predicted compounds
+        appear in the true set, divided by total true compounds.
+        """
+        total_true = 0
+        matched = 0
+        
+        for true_comps, pred_comps in zip(true_all, pred_all):
+            if not true_comps:
+                continue
+            total_true += len(true_comps)
+            true_set = set(true_comps)
+            for comp in pred_comps:
+                if comp in true_set:
+                    matched += 1
+        
+        return matched / total_true if total_true > 0 else 0.0
+    
+    def _coarse_id_to_name(self, coarse_id: int) -> str:
+        """Convert coarse ID back to category name"""
+        from data.ner.necti_dataset_hierarchial import COARSE_CATEGORIES
+        if 0 <= coarse_id < len(COARSE_CATEGORIES):
+            return COARSE_CATEGORIES[coarse_id]
+        return 'No_rel'
     
     def save_checkpoint(self, is_best: bool = False):
         """Save model checkpoint"""
@@ -538,6 +686,7 @@ class HierarchicalTrainer:
             # Evaluate
             eval_metrics = self.evaluate()
             print(f"Epoch {epoch} - Coarse Acc: {eval_metrics['coarse_acc']:.4f}, Fine Acc: {eval_metrics['fine_acc']:.4f}")
+            print(f"Epoch {epoch} - USS: {eval_metrics['USS']:.4f}, LSS: {eval_metrics['LSS']:.4f}, EM: {eval_metrics['EM']:.4f}")
             
             # Log
             if self.logger == 'wandb':
@@ -545,12 +694,13 @@ class HierarchicalTrainer:
                     'epoch': epoch,
                     'val/coarse_acc': eval_metrics['coarse_acc'],
                     'val/fine_acc': eval_metrics['fine_acc'],
-                    'val/coarse_lss': eval_metrics['coarse_lss'],
-                    'val/fine_lss': eval_metrics['fine_lss'],
+                    'val/USS': eval_metrics['USS'],
+                    'val/LSS': eval_metrics['LSS'],
+                    'val/EM': eval_metrics['EM'],
                 }, step=self.global_step)
             
-            # Check for improvement
-            current_metric = eval_metrics['fine_lss']  # Monitor fine-grained performance
+            # Check for improvement (monitor USS as primary metric)
+            current_metric = eval_metrics['USS']
             is_best = current_metric > self.best_metric
             
             if is_best:
@@ -567,7 +717,7 @@ class HierarchicalTrainer:
                 print(f"\nEarly stopping at epoch {epoch}")
                 break
         
-        print(f"\nTraining complete! Best fine-grained LSS: {self.best_metric:.4f}")
+        print(f"\nTraining complete! Best USS: {self.best_metric:.4f}")
         
         if self.logger == 'wandb':
             self.wandb.finish()

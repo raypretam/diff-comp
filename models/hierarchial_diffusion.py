@@ -101,13 +101,15 @@ class LocalWindowAttention(nn.Module):
         # Compute attention scores
         attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, heads, N, N]
         
-        # Apply local window mask (positions outside window get -inf)
-        attn = attn.masked_fill(~local_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+        # Apply local window mask (positions outside window get large negative)
+        # Use -1e4 instead of -inf to avoid NaN from softmax when all positions are masked
+        # (This matches the working global attention in DiT)
+        attn = attn.masked_fill(~local_mask.unsqueeze(0).unsqueeze(0), -1e4)
         
         # Apply padding mask if provided
         if mask is not None:
             padding_mask = mask[:, None, None, :]  # [B, 1, 1, N]
-            attn = attn.masked_fill(padding_mask == 0, float('-inf'))
+            attn = attn.masked_fill(padding_mask == 0, -1e4)
         
         attn = F.softmax(attn, dim=-1)
         attn = self.dropout(attn)
@@ -462,8 +464,12 @@ class HierarchicalDiffusionNeCTI(nn.Module):
         Returns:
             loss: scalar
         """
+        # Replace -100 (padding) with 0 before bit conversion (we mask these in loss anyway)
+        coarse_labels_clean = coarse_labels.clone()
+        coarse_labels_clean[coarse_labels_clean == -100] = 0
+        
         # Convert labels to bits
-        bits = decimal_to_bits(coarse_labels, self.coarse_bits) * self.snr_scale
+        bits = decimal_to_bits(coarse_labels_clean, self.coarse_bits) * self.snr_scale
         
         # Sample timesteps
         batch_size = features.shape[0]
@@ -566,8 +572,12 @@ class HierarchicalDiffusionNeCTI(nn.Module):
         Returns:
             loss: scalar
         """
+        # Replace -100 (padding) with 0 before bit conversion (we mask these in loss anyway)
+        fine_labels_clean = fine_labels.clone()
+        fine_labels_clean[fine_labels_clean == -100] = 0
+        
         # Convert fine labels to bits
-        bits = decimal_to_bits(fine_labels, self.fine_bits) * self.snr_scale
+        bits = decimal_to_bits(fine_labels_clean, self.fine_bits) * self.snr_scale
         
         # Sample timesteps
         batch_size = features.shape[0]
