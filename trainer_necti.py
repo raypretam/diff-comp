@@ -13,15 +13,10 @@ from transformers import AutoTokenizer
 from torch.optim import AdamW
 import wandb
 from tqdm import tqdm
-
 from prettytable import PrettyTable
 from utils import get_lr_scheduler
-from typing import Dict, List, Tuple
+from typing import Dict, List
 import numpy as np
-import json
-
-from data_balancing import BalancedDataLoader, LabelWeightCalculator
-from models.hierarchial_diffusion import HierarchicalDiffusionNeCTI
 
 
 class NeCTITrainer:
@@ -34,20 +29,6 @@ class NeCTITrainer:
         # Set default value for use_context if not present
         if not hasattr(self.args, 'use_context'):
             self.args.use_context = False
-        
-        # Set default value for save_limit if not present
-        if not hasattr(self.args, 'save_limit'):
-            self.args.save_limit = 3
-        
-        # Track saved checkpoint files for cleanup
-        self.saved_checkpoints = []
-        
-        # Early stopping
-        self.patience = getattr(self.args, 'patience', 5)
-        self.min_delta = getattr(self.args, 'min_delta', 0.0001)
-        self.early_stopping_counter = 0
-        self.best_f1_for_early_stopping = 0.0
-        print(f"Early stopping enabled with patience={self.patience}, min_delta={self.min_delta}")
         
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
         
@@ -73,17 +54,6 @@ class NeCTITrainer:
             print(f"Number of classes ({self.args.num_classes}) adjusted to {len(self.label_set)} based on dataset")
             self.args.num_classes = len(self.label_set)
         
-        # Get compound-aware parameters
-        compound_aware = getattr(self.args, 'compound_aware', False)
-        compound_pooling = getattr(self.args, 'compound_pooling', 'mean')
-        use_graph_encoder = getattr(self.args, 'use_graph_encoder', False)
-        num_gnn_layers = getattr(self.args, 'num_gnn_layers', 2)
-        
-        # Get contrastive learning parameters
-        use_contrastive = getattr(self.args, 'use_contrastive', False)
-        contrastive_weight = getattr(self.args, 'contrastive_weight', 0.1)
-        contrastive_config = self.args if use_contrastive else None
-        
         # Initialize model with XLM-R backbone
         self.model = BitDit(
             device=self.device,
@@ -104,15 +74,7 @@ class NeCTITrainer:
             freeze_bert=self.args.freeze_bert,
             max_length=self.args.max_length,
             depth=self.args.depth,
-            num_labels=len(self.label_set),
-            compound_aware=compound_aware,
-            compound_pooling=compound_pooling,
-            use_graph_encoder=use_graph_encoder,
-            num_gnn_layers=num_gnn_layers,
-            label_set=self.label_set if compound_aware else None,
-            use_contrastive=use_contrastive,
-            contrastive_weight=contrastive_weight,
-            contrastive_config=contrastive_config
+            num_labels=len(self.label_set)
         )
         
         if self.args.logger == "wandb":
@@ -120,91 +82,38 @@ class NeCTITrainer:
         
         # Initialize tokenizer for XLM-R
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
-        # CRITICAL: Pass label_set to collator so it can mask ROOT:Comp_root
-        self.collate_fn = NeCTICollator(
-            self.tokenizer, 
-            max_length=self.args.max_length, 
-            add_lstm=self.args.add_lstm,
-            label_set=self.label_set
-        )
+        self.collate_fn = NeCTICollator(self.tokenizer, max_length=self.args.max_length)
         
-        # Create data loaders (using standard sampling for all splits)
-        # FIXED: Ensure balanced=True for training
-        self.train_dataloader = self._get_dataloader('train', self.args.batch_size, balanced=True)
-        self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size, balanced=False)
-        self.test_dataloader = self._get_dataloader('test', self.args.batch_size, balanced=False)
+        # Create data loaders
+        self.train_dataloader = self._get_dataloader('train', self.args.batch_size)
+        self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size)
+        self.test_dataloader = self._get_dataloader('test', self.args.batch_size)
         
         # Try to load OOD data if available
         try:
-            self.ood_dataloader = self._get_dataloader('ood', self.args.batch_size, balanced=False)
+            self.ood_dataloader = self._get_dataloader('ood', self.args.batch_size)
         except FileNotFoundError:
             print("OOD dataset not found, skipping...")
             self.ood_dataloader = None
         
-        # Calculate actual total training steps based on dataloader size and epochs
-        self.steps_per_epoch = len(self.train_dataloader)
-        self.total_steps = self.args.max_epochs * self.steps_per_epoch
-        
-        # Calculate warmup steps as a percentage of total steps if not explicitly set or zero
-        if self.args.warmup_steps == 0:
-            self.warmup_steps = int(0.1 * self.total_steps)  # 10% warmup by default
-        else:
-            self.warmup_steps = self.args.warmup_steps
-        
-        print(f"\n{'='*80}")
-        print("Training Configuration:")
-        print(f"{'='*80}")
-        print(f"Steps per epoch: {self.steps_per_epoch}")
-        print(f"Total epochs: {self.args.max_epochs}")
-        print(f"Total training steps: {self.total_steps}")
-        print(f"Warmup steps: {self.warmup_steps} ({100*self.warmup_steps/self.total_steps:.1f}% of total)")
-        print(f"{'='*80}\n")
+        self.steps = self.args.max_steps
         
         self.optimizer, self.lr_scheduler = \
             self._configure_optimizer_and_scheduler(self.args.optimizer_type, self.args.lr_scheduler_type)
     
-    def _get_dataloader(self, mode: str, bsz: int, balanced: bool = False):
-        """
-        Create dataloader for specified split.
-        """
+    def _get_dataloader(self, mode: str, bsz: int):
+        """Create dataloader for specified split"""
         dataset = NeCTIDataset(self.dataset_path, mode, self.label_set, use_context=self.args.use_context)
-        
-        if balanced and mode == 'train':
-            # Use balanced sampling for training
-            dataloader, sampler = BalancedDataLoader.create(
-                dataset=dataset,
-                label_set=self.label_set,
-                batch_size=bsz,
-                strategy='weighted',  # Options: 'weighted', 'stratified', 'hard_mining'
-                num_workers=self.args.num_workers,
-                collate_fn=self.collate_fn
-            )
-            
-            # Print and save weight summary
-            sampler.weight_calc.print_weights_summary()
-            
-            # Save weights to file
-            os.makedirs('logs', exist_ok=True)
-            with open('logs/label_weights.json', 'w') as f:
-                json.dump({
-                    str(self.label_set.id2label(label_id)): weight
-                    for label_id, weight in sampler.weight_calc.label_weights.items()
-                }, f, indent=2)
-            
-            # CRITICAL FIX: Return ONLY dataloader, not (dataloader, sampler)
-            return dataloader
-        else:
-            # Standard dataloader for eval data
-            shuffle = (mode == 'train')
-            dataloader = DataLoader(
-                dataset,
-                batch_size=bsz,
-                num_workers=self.args.num_workers,
-                drop_last=False,
-                shuffle=shuffle,
-                collate_fn=self.collate_fn
-            )
-            return dataloader
+        shuffle = (mode == 'train')
+        dataloader = DataLoader(
+            dataset,
+            batch_size=bsz,
+            num_workers=self.args.num_workers,
+            drop_last=False,
+            shuffle=shuffle,
+            collate_fn=self.collate_fn
+        )
+        return dataloader
     
     def _print_hyperparameters(self):
         hparams = PrettyTable()
@@ -218,28 +127,6 @@ class NeCTITrainer:
         num_trainable_para = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Number of all parameters: {num_para:,}")
         print(f"Number of trainable parameters: {num_trainable_para:,}")
-    
-    def _check_gradient_flow(self, step: int):
-        """Check if gradients are flowing properly"""
-        total_norm = 0.0
-        num_params_with_grad = 0
-        num_params_without_grad = 0
-        
-        for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                if param.grad is not None:
-                    param_norm = param.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-                    num_params_with_grad += 1
-                else:
-                    num_params_without_grad += 1
-        
-        total_norm = total_norm ** 0.5
-        
-        if step % 50 == 0:  # Log every 50 steps
-            print(f"  [Step {step}] Gradient norm: {total_norm:.4f}, Params with grad: {num_params_with_grad}, without: {num_params_without_grad}")
-            
-        return total_norm
     
     def _configure_device(self):
         if torch.cuda.is_available():
@@ -273,96 +160,15 @@ class NeCTITrainer:
         else:
             raise NotImplementedError(f"Optimizer {optimizer_type} not implemented")
         
-        # Use calculated total_steps and warmup_steps instead of args values
         lr_scheduler = get_lr_scheduler(
             name=lr_scheduler_type,
             optimizer=optimizer,
-            num_warmup_steps=self.warmup_steps,
-            num_training_steps=self.total_steps,
+            num_warmup_steps=self.args.warmup_steps,
+            num_training_steps=self.steps,
             num_cycles=self.args.num_cycles if hasattr(self.args, 'num_cycles') else None
         )
-
-        return optimizer, lr_scheduler
-
-    def decode_relative_to_spans(self, token_ids: List[int], relative_tags: List[str]) -> List[Tuple[int, int, str]]:
-        """
-        Decodes Relative Tags with HEURISTIC REPAIR.
-        Fixes '0:Bv' (Self-Loop) bugs by forcing adjacent attachment.
-        """
-        children = {tid: [] for tid in token_ids}
-        node_relations = {} 
         
-        for i, tag in enumerate(relative_tags):
-            if i >= len(token_ids): break
-            current_id = token_ids[i]
-            
-            # 1. Handle Roots
-            if tag in ["ROOT:root", "ROOT:Comp_root"]:
-                node_relations[current_id] = "Comp_root"
-                continue
-            
-            if ":" not in tag: continue 
-                
-            try:
-                dist_str, rel = tag.split(":", 1)
-                dist = int(dist_str)
-                
-                # --- HEURISTIC REPAIR START ---
-                # If model predicts Self-Loop (dist=0), force Right-Attachment (+1)
-                # This turns "Garbage" into a "Valid Baseline Guess"
-                if dist == 0:
-                    dist = 1 
-                # -------------------------------
-
-                head_list_idx = i + dist
-                
-                if 0 <= head_list_idx < len(token_ids):
-                    head_id = token_ids[head_list_idx]
-                    
-                    # Cycle check (prevent 1->2 and 2->1)
-                    if head_id == current_id:
-                        continue
-                        
-                    children[head_id].append(current_id)
-                    node_relations[current_id] = rel
-            except ValueError:
-                continue
-
-        # 2. Extract Spans (Standard Logic)
-        spans = []
-        subtree_ranges = {} 
-
-        def get_subtree_range(node_id, current_path):
-            if node_id in subtree_ranges: return subtree_ranges[node_id]
-            if node_id in current_path: return (node_id, node_id)
-            
-            current_path.add(node_id)
-            indices = [node_id]
-            for child in children[node_id]:
-                c_min, c_max = get_subtree_range(child, current_path)
-                indices.extend([c_min, c_max])
-            current_path.remove(node_id)
-            
-            res = (min(indices), max(indices))
-            subtree_ranges[node_id] = res
-            return res
-
-        for head_id in token_ids:
-            kids = children[head_id]
-            if not kids: continue
-            
-            # Use the most frequent relation among children as the span label
-            child_rels = [node_relations.get(k, '') for k in kids]
-            valid_rels = [r for r in child_rels if r not in ['No_rel', 'root', 'Comp_root', '']]
-            
-            if valid_rels:
-                s_min, s_max = get_subtree_range(head_id, set())
-                # Pick most common relation type (Voter method)
-                from collections import Counter
-                primary_label = Counter(valid_rels).most_common(1)[0][0]
-                spans.append((s_min, s_max, primary_label))
-
-        return spans
+        return optimizer, lr_scheduler
     
     def train(self):
         """Main training loop"""
@@ -388,25 +194,11 @@ class NeCTITrainer:
                 input_ids = batch['input_ids'].to(self.device)
                 attention_mask = batch['attention_mask'].to(self.device)
                 seq_labels = batch['seq_labels'].to(self.device)
-                # NEW: Get span labels (aligned with subwords)
-                span_labels = batch.get('seq_span_labels', None)
-                if span_labels is not None:
-                    span_labels = span_labels.to(self.device)
-                words2pieces = batch.get('words2pieces', None)
-                if words2pieces is not None:
-                    words2pieces = words2pieces.to(self.device)
                 
-                loss = self.model(input_ids, attention_mask, seq_labels, span_labels, words2pieces)
+                loss = self.model(input_ids, attention_mask, seq_labels)
                 
                 self.optimizer.zero_grad()
                 loss.backward()
-                
-                # Check gradient flow for first epoch to detect issues early
-                if epoch == 1 and train_steps % 50 == 0:
-                    grad_norm = self._check_gradient_flow(train_steps)
-                    if grad_norm == 0:
-                        print(f"  WARNING: Zero gradient norm detected at step {train_steps}!")
-                
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm)
                 self.optimizer.step()
                 self.lr_scheduler.step()
@@ -415,105 +207,43 @@ class NeCTITrainer:
                 train_steps += 1
                 global_step += 1
                 
-                # Update progress bar with loss and learning rate
-                current_lr_bert = self.optimizer.param_groups[0]['lr']
-                current_lr_other = self.optimizer.param_groups[1]['lr']
+                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
                 
-                # Prepare postfix dict with main metrics
-                postfix_dict = {
-                    'loss': f'{loss.item():.4f}',
-                    'lr_bert': f'{current_lr_bert:.2e}',
-                    'lr_other': f'{current_lr_other:.2e}'
-                }
-                
-                # ---- MODIFIED: Handle new loss keys safely ----
-                if hasattr(self.model, 'last_losses') and self.model.last_losses:
-                    # Token diffusion is 'diff_tok' in new model, 'diffusion' in old
-                    d_loss = self.model.last_losses.get('diff_tok', self.model.last_losses.get('diffusion', 0.0))
-                    postfix_dict['diff'] = f"{d_loss:.4f}"
-                    
-                    if 'diff_cmp' in self.model.last_losses:
-                         postfix_dict['cmp'] = f"{self.model.last_losses['diff_cmp']:.4f}"
-                    
-                    if 'span' in self.model.last_losses:
-                        postfix_dict['span'] = f"{self.model.last_losses['span']:.4f}"
-                # -----------------------------------------------
-                
-                pbar.set_postfix(postfix_dict)
-                
-                # Log to wandb (include contrastive loss tracking)
                 if self.args.logger == 'wandb':
-                    log_dict = {
+                    wandb.log({
                         'train/loss': loss.item(),
-                        'train/lr_bert': current_lr_bert,
-                        'train/lr_other': current_lr_other,
+                        'train/lr_bert': self.optimizer.param_groups[0]['lr'],
+                        'train/lr_other': self.optimizer.param_groups[1]['lr'],
                         'global_step': global_step
-                    }
-                    # Add separate loss components if available
-                    if hasattr(self.model, 'last_losses') and self.model.last_losses:
-                        # Safely log token diffusion
-                        log_dict['train/diffusion_loss'] = self.model.last_losses.get('diff_tok', self.model.last_losses.get('diffusion', 0.0))
-                        
-                        if 'diff_cmp' in self.model.last_losses:
-                            log_dict['train/compound_loss'] = self.model.last_losses['diff_cmp']
-                            
-                        if 'span' in self.model.last_losses:
-                            log_dict['train/span_loss'] = self.model.last_losses['span']
-                            
-                        if 'contrastive' in self.model.last_losses:
-                             log_dict['train/contrastive_loss'] = self.model.last_losses['contrastive']
-
-                    wandb.log(log_dict)
+                    })
             
             avg_train_loss = train_loss / train_steps
             print(f"Average training loss: {avg_train_loss:.4f}")
-            print(f"Learning rates - BERT: {self.optimizer.param_groups[0]['lr']:.2e}, Other: {self.optimizer.param_groups[1]['lr']:.2e}")
             
             # Evaluation on dev set
             print("\nEvaluating on dev set...")
             dev_results = self.evaluate(self.dev_dataloader, "dev")
             
-            print(f"Dev USS: {dev_results['USS']:.4f}")
-            print(f"Dev LSS: {dev_results['LSS']:.4f}")
-            print(f"Dev EM: {dev_results['EM']:.4f}")
+            print(f"Dev F1: {dev_results['f1']:.4f}")
+            print(f"Dev Precision: {dev_results['precision']:.4f}")
+            print(f"Dev Recall: {dev_results['recall']:.4f}")
             
             if self.args.logger == 'wandb':
                 wandb.log({
-                    'dev/USS': dev_results['USS'],
-                    'dev/LSS': dev_results['LSS'],
-                    'dev/EM': dev_results['EM'],
+                    'dev/f1': dev_results['f1'],
+                    'dev/precision': dev_results['precision'],
+                    'dev/recall': dev_results['recall'],
                     'epoch': epoch
                 })
             
-            # Save only best model
-            if dev_results['USS'] > best_f1:
-                best_f1 = dev_results['USS']
-                self._save_model(epoch, dev_results['USS'], is_best=True)
-                print(f"New best USS: {best_f1:.4f} - Model saved!")
-            
-            # Early stopping check
-            if dev_results['USS'] > self.best_f1_for_early_stopping + self.min_delta:
-                # Significant improvement
-                self.best_f1_for_early_stopping = dev_results['USS']
-                self.early_stopping_counter = 0
-            else:
-                # No significant improvement
-                self.early_stopping_counter += 1
-                print(f"Early stopping counter: {self.early_stopping_counter}/{self.patience}")
-                
-                if self.early_stopping_counter >= self.patience:
-                    print(f"\n{'='*50}")
-                    print(f"Early stopping triggered after {epoch} epochs!")
-                    print(f"Best USS score: {best_f1:.4f}")
-                    print(f"{'='*50}\n")
-                    break
-            
-            # Save checkpoint every 20 epochs
-            if epoch % 20 == 0:
-                self._save_model(epoch, dev_results['EM'], is_best=False)
-                print(f"Checkpoint saved at epoch {epoch}")
+            # Save best model
+            if dev_results['f1'] > best_f1:
+                best_f1 = dev_results['f1']
+                self._save_model(epoch, dev_results['f1'])
+                print(f"New best F1: {best_f1:.4f} - Model saved!")
         
         # Final evaluation on test set
+        
         print("\n" + "=" * 50)
         print("Training completed! Evaluating on test set...")
         print("=" * 50 + "\n")
@@ -523,200 +253,101 @@ class NeCTITrainer:
         
         test_results = self.evaluate(self.test_dataloader, "test")
         print(f"\nTest Results:")
-        print(f"USS: {test_results['USS']:.4f}")
-        print(f"LSS: {test_results['LSS']:.4f}")
-        print(f"EM: {test_results['EM']:.4f}")
+        print(f"F1: {test_results['f1']:.4f}")
+        print(f"Precision: {test_results['precision']:.4f}")
+        print(f"Recall: {test_results['recall']:.4f}")
         
         if self.ood_dataloader is not None:
             print("\nEvaluating on OOD set...")
             ood_results = self.evaluate(self.ood_dataloader, "ood")
-            print(f"OOD USS: {ood_results['USS']:.4f}")
+            print(f"OOD F1: {ood_results['f1']:.4f}")
         
         if self.args.logger == 'wandb':
             wandb.log({
-                'test/USS': test_results['USS'],
-                'test/LSS': test_results['LSS'],
-                'test/EM': test_results['EM']
+                'test/f1': test_results['f1'],
+                'test/precision': test_results['precision'],
+                'test/recall': test_results['recall']
             })
     
-    def infer_and_add_roots(self, token_indices: List[int], tags: List[str]) -> List[str]:
-        """
-        Infer ROOT:Comp_root positions from dependency structure and add them.
-        Roots are tokens that have NO incoming edges from compound relations.
-        """
-        # Build set of tokens that are pointed to by compound relations
-        has_incoming = set()
-        
-        for i, tag in enumerate(tags):
-            if tag in ["ROOT:root", "ROOT:Comp_root", "No_rel"]:
-                continue
-            
-            if ":" in tag:
-                try:
-                    dist_str, rel = tag.split(":", 1)
-                    # Skip No_rel relations
-                    if rel == "No_rel":
-                        continue
-                    dist = int(dist_str)
-                    head_idx = i + dist
-                    
-                    if 0 <= head_idx < len(token_indices):
-                        # This token (head_idx) receives an edge
-                        has_incoming.add(head_idx)
-                except:
-                    pass
-        
-        # Tokens without incoming compound edges are roots
-        result_tags = []
-        for i, tag in enumerate(tags):
-            # If this token has compound children but no incoming compound edges -> it's a root
-            if i not in has_incoming and tag != "No_rel":
-                # Check if it has outgoing edges (i.e., it's part of a compound)
-                has_outgoing = False
-                for j, other_tag in enumerate(tags):
-                    if ":" in other_tag:
-                        try:
-                            dist_str, rel = other_tag.split(":", 1)
-                            if rel != "No_rel":
-                                dist = int(dist_str)
-                                if j + dist == i:
-                                    has_outgoing = True
-                                    break
-                        except:
-                            pass
-                
-                # If it has compound children pointing to it, mark as root
-                if has_outgoing:
-                    result_tags.append("ROOT:Comp_root")
-                else:
-                    result_tags.append(tag)
-            else:
-                result_tags.append(tag)
-        
-        return result_tags
-
     @torch.no_grad()
     def evaluate(self, dataloader, split_name="dev"):
+        """Evaluate model on given dataloader"""
         self.model.eval()
         
-        # Use the specific Span evaluator
-        from span_based_evaluator import SpanBasedEvaluator
-        
-        true_spans_all = []
-        pred_spans_all = []
-        
-        # Debug counters
-        debug_empty_preds = 0
-        debug_empty_true = 0
-        debug_total = 0
-        debug_samples = []
+        all_predictions = []
+        all_labels = []
+        all_compounds = []
         
         for batch in tqdm(dataloader, desc=f"Evaluating {split_name}"):
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             seq_labels = batch['seq_labels'].to(self.device)
+            compounds = batch['compounds']
             
-            # Predictions (Bit Diffusion)
-            predictions, _ = self.model(input_ids, attention_mask, seq_labels, None)
+            predictions, _ = self.model(input_ids, attention_mask, seq_labels)
             
+            # Collect predictions and labels (excluding padding)
             mask = (seq_labels != -100)
             
-            # Process sentence by sentence
-            for i in range(input_ids.shape[0]):
-                # 1. Get Length
-                valid_len = mask[i].sum().item()
-                
-                # 2. Get Raw Predictions and Ground Truth (IDs)
-                pred_ids = predictions[i, :valid_len].cpu().tolist()
-                true_ids = seq_labels[i, :valid_len].cpu().tolist()
-                
-                # 3. Convert IDs -> Relative Tags (e.g. "+1:Tat")
-                # Note: -100 (masked) tokens will map back to some label, but we filter by valid_len
-                pred_tags = [self.label_set.id2label(pid) if pid != -100 else "No_rel" for pid in pred_ids]
-                true_tags = [self.label_set.id2label(tid) if tid != -100 else "No_rel" for tid in true_ids]
-                
-                # 4. CRITICAL: Infer ROOT:Comp_root positions from dependency structure
-                # (since we masked it from training, model can't predict it)
-                token_indices = list(range(1, valid_len + 1))
-                pred_tags_with_roots = self.infer_and_add_roots(token_indices, pred_tags)
-                true_tags_with_roots = self.infer_and_add_roots(token_indices, true_tags)
-                
-                # 5. Decode Tags -> Spans using dependency structure
-                pred_spans_sent = self.decode_relative_to_spans(token_indices, pred_tags_with_roots)
-                true_spans_sent = self.decode_relative_to_spans(token_indices, true_tags_with_roots)
-                
-                true_spans_all.append(true_spans_sent)
-                pred_spans_all.append(pred_spans_sent)
-                
-                # Debug tracking
-                debug_total += 1
-                if not pred_spans_sent:
-                    debug_empty_preds += 1
-                if not true_spans_sent:
-                    debug_empty_true += 1
-                if len(debug_samples) < 3:
-                    debug_samples.append({
-                        'pred_tags': pred_tags_with_roots,
-                        'true_tags': true_tags_with_roots,
-                        'pred_spans': pred_spans_sent,
-                        'true_spans': true_spans_sent
-                    })
+            batch_preds = predictions[mask].cpu().numpy()
+            batch_labels = seq_labels[mask].cpu().numpy()
+            
+            all_predictions.extend(batch_preds.tolist())
+            all_labels.extend(batch_labels.tolist())
+            all_compounds.extend(compounds)
         
-        # Calculate Metrics using the strict SpanBasedEvaluator
-        # This gives you USS (Unlabeled), LSS (Labeled), and EM (Exact Match)
-        results = SpanBasedEvaluator.evaluate_batch(true_spans_all, pred_spans_all)
-        
-        # Debug output
-        print(f"\n{'='*60}")
-        print(f"DEBUG EVALUATION STATS ({split_name}):")
-        print(f"Total sentences: {debug_total}")
-        print(f"Empty predictions: {debug_empty_preds} ({100*debug_empty_preds/debug_total:.1f}%)")
-        print(f"Empty ground truth: {debug_empty_true} ({100*debug_empty_true/debug_total:.1f}%)")
-        print(f"\nSample predictions (first 3):")
-        for idx, sample in enumerate(debug_samples):
-            print(f"\n  Sample {idx+1}:")
-            print(f"    Pred tags: {sample['pred_tags'][:10]}...")
-            print(f"    True tags: {sample['true_tags'][:10]}...")
-            print(f"    Pred spans: {sample['pred_spans']}")
-            print(f"    True spans: {sample['true_spans']}")
-        print(f"{'='*60}\n")
+        # Calculate metrics
+        results = self._calculate_metrics(all_predictions, all_labels)
         
         return results
     
-    def _save_model(self, epoch, f1_score, is_best=False):
-        """Save model checkpoint"""
+    def _calculate_metrics(self, predictions: List[int], labels: List[int]) -> Dict[str, float]:
+        """Calculate precision, recall, and F1 score"""
+        predictions = np.array(predictions)
+        labels = np.array(labels)
+        
+        # For compound identification: treat No_rel and root as negative class
+        no_rel_id = self.label_set.label2id('No_rel')
+        root_id = self.label_set.label2id('root')
+        
+        # Binary classification: compound vs non-compound
+        pred_is_compound = (predictions != no_rel_id) & (predictions != root_id)
+        label_is_compound = (labels != no_rel_id) & (labels != root_id)
+        
+        tp = np.sum(pred_is_compound & label_is_compound)
+        fp = np.sum(pred_is_compound & ~label_is_compound)
+        fn = np.sum(~pred_is_compound & label_is_compound)
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+        
+        return {
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
+        }
+    
+    def _save_model(self, epoch, f1_score):
+        """Save model checkpoint (only keeps the single best checkpoint)"""
         context_mode = "with_ctx" if self.args.use_context else "no_ctx"
         save_dir = os.path.join(os.getcwd(), 'saved_models', f'necti_{self.args.granularity}_{context_mode}')
         os.makedirs(save_dir, exist_ok=True)
         
-        checkpoint_data = {
+        # Remove any previous checkpoints in this directory
+        import glob
+        for old_ckpt in glob.glob(os.path.join(save_dir, '*.pt')):
+            os.remove(old_ckpt)
+        
+        # Save only the best checkpoint
+        save_path = os.path.join(save_dir, 'best_model.pt')
+        torch.save({
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'f1_score': f1_score,
             'args': self.args
-        }
-        
-        if is_best:
-            save_path = os.path.join(save_dir, f'best_model_epoch{epoch}_f1{f1_score:.4f}.pt')
-            # Save a "latest best" version for easy loading
-            latest_path = os.path.join(save_dir, 'best_model.pt')
-            torch.save(checkpoint_data, save_path)
-            torch.save(checkpoint_data, latest_path)
-        else:
-            # Save periodic checkpoint
-            save_path = os.path.join(save_dir, f'checkpoint_epoch{epoch}_f1{f1_score:.4f}.pt')
-            torch.save(checkpoint_data, save_path)
-            
-            # Track this checkpoint
-            self.saved_checkpoints.append(save_path)
-            
-            # Remove old checkpoints if limit exceeded
-            if len(self.saved_checkpoints) > self.args.save_limit:
-                old_checkpoint = self.saved_checkpoints.pop(0)
-                if os.path.exists(old_checkpoint):
-                    os.remove(old_checkpoint)
-                    print(f"Removed old checkpoint: {os.path.basename(old_checkpoint)}")
+        }, save_path)
     
     def _load_best_model(self):
         """Load best model for final evaluation"""

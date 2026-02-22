@@ -277,9 +277,11 @@ class LocalRefinementDiT(nn.Module):
         t_emb = t_emb.unsqueeze(1).expand(-1, x.shape[1], -1)  # [batch, seq_len, hidden]
         
         # Coarse label conditioning
-        # Map -100 (padding) to num_coarse_classes index to avoid negative indexing
+        # Map -100 (padding) to last embedding index, and clamp all values to valid range
+        # bits_to_decimal can produce out-of-range values (e.g. 7 with 3 bits but only 6 classes)
         coarse_labels_clamped = coarse_labels.clone()
         coarse_labels_clamped[coarse_labels == -100] = self.coarse_embed.num_embeddings - 1
+        coarse_labels_clamped = coarse_labels_clamped.clamp(0, self.coarse_embed.num_embeddings - 1)
         coarse_emb = self.coarse_embed(coarse_labels_clamped)  # [batch, seq_len, hidden]
         
         # Feature conditioning
@@ -543,8 +545,10 @@ class HierarchicalDiffusionNeCTI(nn.Module):
             else:
                 x = x_start
         
-        # Convert bits to labels
+        # Convert bits to labels and clamp to valid range
+        # bits_to_decimal with 3 bits can produce 0-7, but we only have num_coarse_classes (6) valid IDs
         coarse_preds = bits_to_decimal(x / self.snr_scale, self.coarse_bits)
+        coarse_preds = coarse_preds.clamp(0, self.num_coarse_classes - 1)
         return coarse_preds
     
     # -------------------------------------------------------------------------
@@ -655,8 +659,9 @@ class HierarchicalDiffusionNeCTI(nn.Module):
             else:
                 x = x_start
         
-        # Convert bits to labels
+        # Convert bits to labels and clamp to valid range
         fine_preds = bits_to_decimal(x / self.snr_scale, self.fine_bits)
+        fine_preds = fine_preds.clamp(0, self.num_fine_classes - 1)
         
         # Optional: Constrain fine predictions to valid labels within coarse category
         if self.fine_to_coarse is not None:

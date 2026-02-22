@@ -631,7 +631,10 @@ class HierarchicalTrainer:
         return 'No_rel'
     
     def save_checkpoint(self, is_best: bool = False):
-        """Save model checkpoint"""
+        """Save model checkpoint (only keeps the single best checkpoint)"""
+        if not is_best:
+            return  # Only save when we have a new best
+        
         checkpoint = {
             'epoch': self.current_epoch,
             'global_step': self.global_step,
@@ -642,13 +645,14 @@ class HierarchicalTrainer:
             'config': self.config
         }
         
-        # Save last checkpoint
-        torch.save(checkpoint, self.output_dir / 'last.pt')
+        # Remove any previous checkpoints
+        import glob
+        for old_ckpt in glob.glob(str(self.output_dir / '*.pt')):
+            os.remove(old_ckpt)
         
-        # Save best checkpoint
-        if is_best:
-            torch.save(checkpoint, self.output_dir / 'best.pt')
-            print(f"Saved best model with metric: {self.best_metric:.4f}")
+        # Save only the best checkpoint
+        torch.save(checkpoint, self.output_dir / 'best.pt')
+        print(f"Saved best model with metric: {self.best_metric:.4f}")
     
     def train(self):
         """Main training loop"""

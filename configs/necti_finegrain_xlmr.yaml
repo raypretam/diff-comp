@@ -1,67 +1,49 @@
 # Configuration for NeCTI Nested Compound Identification (Finegrain)
 # Using XLM-RoBERTa encoder with DiffusionSL decoder
-# Updated: Increased sampling steps and model capacity for better EM scores
 
 # Model Configuration
 base: 'ner'
 dataset: 'necti_finegrain'
-num_classes: 54  # Will be adjusted automatically based on data
-backbone: 'FacebookAI/xlm-roberta-large'  # XLM-R encoder
+num_classes: 56  # Will be adjusted automatically based on data
+backbone: 'xlm-roberta-base'  # XLM-R encoder
 time_steps: 1000
-sampling_steps: 100  # INCREASED from 10 to 50 for finer generation
-ddim_sampling_eta: 0.2
+sampling_steps: 100
+ddim_sampling_eta: 1.0
 self_condition: True
-snr_scale: 0.5  # CRITICAL: Increased to 1.0 to prevent ROOT:Comp_root collapse (was 0.1)
+snr_scale: 2.0
 dim_model: 1024  # XLM-R hidden size
-dim_time: 512  # INCREASED from 256 for richer temporal embeddings
-depth: 12  # INCREASED from 6 to 12 (match coarse model capacity despite 10x more classes)
-objective: 'pred_x0' # Changed from pred_x0 to pred_noise for better stability with more steps
-noise_schedule: 'cosine'  # CHANGED from linear to cosine (better for more steps)
-loss_type: 'l2'  # Options: 'l2', 'l1'
-compound_aware: False  # Enable compound-level diffusion (NOW WITH WORKING INFERENCE!)
-compound_pooling: 'mean'  # Pooling method: 'mean', 'max', 'attention', 'lstm'
-use_graph_encoder: False  # Use Graph-Aware Encoder to model dependencies BETWEEN compounds
-num_gnn_layers: 3  # Number of GNN layers for inter-compound message passing
-add_lstm: False  # ENABLED LSTM for better sequence modeling
+dim_time: 512
+depth: 12
+objective: 'pred_x0'
+noise_schedule: 'cosine'
+loss_type: 'l2'
+add_lstm: False
 freeze_bert: False
 max_length: 256
 network_architecture: 'transformer'
-ensemble: False  # ENABLED for multiple predictions
-
-# Contrastive Learning Configuration
-use_contrastive: False  # Enable InfoNCE contrastive learning
-contrastive_weight: 0.1  # Weight for contrastive loss (relative to diffusion loss)
-contrastive_temp: 0.07  # Temperature for InfoNCE (lower = harder negatives)
-contrastive_type: 'simple'  # 'simple' or 'hierarchical'
+ensemble: False
 
 # Data Configuration
-data_path: "/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data"
+data_path: '/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data'
 granularity: 'Finegrain'
 
 # Training Configuration
 logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
 output_dir: 'saved_models/necti_finegrain'
-batch_size: 4  # CRITICAL: Reduced to 4 for more stochasticity (prevents mode collapse)
-num_workers: 8  # INCREASED for better data loading
-max_epochs: 200 
-max_steps: 250000  # INCREASED from 250000 for more training
-warmup_steps: 1000  # INCREASED from 1000 for stability with deeper mode
+batch_size: 16
+num_workers: 4
+max_epochs: 20
+max_steps: 250000
+warmup_steps: 1000
 warmup_ratio: 0.01
 optimizer_type: 'AdamW'
-lr_scheduler_type: 'cosine'  # CHANGED from linear to cosine for better convergence
-lr_bert: 2e-5  # CRITICAL: Increased to force BERT adaptation (prevent collapse)
-lr_other: 1e-4  # Increased to force decoder learning
+lr_scheduler_type: 'cosine'
+lr_bert: 2e-5  # Lower learning rate for pretrained XLM-R
+lr_other: 5e-4  # Higher learning rate for diffusion components
 weight_decay: 0.01
 max_grad_norm: 1.0
-accumulation_steps: 1  # ADDED gradient accumulation for effective batch size 32
+accumulation_steps: 1
 
 # GPU Configuration
 use_gpu: True
 gpus: 1
-
-# Inference Configuration
-use_cle_decoding: False  # CLE disabled - not suitable for token-based evaluation
-
-# Early Stopping Configuration
-patience: 50  # Number of epochs without improvement before stopping (higher for finegrain)
-min_delta: 0.00005  # Minimum improvement threshold

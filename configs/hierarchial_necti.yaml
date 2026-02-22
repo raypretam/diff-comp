@@ -61,9 +61,9 @@ training:
   freeze_stage1_for_stage2: True
   
   # General training
-  batch_size: 16
-  max_epochs: 50
-  max_steps: 100000
+  batch_size: 4
+  max_epochs: 200
+  max_steps: 250000
   
   # Optimizer
   optimizer_type: 'AdamW'
@@ -110,8 +110,6 @@ label_hierarchy:
   
   # Avyayibhava subtypes (Coarse ID: 3)
   avyayibhava_subtypes: [45, 46, 47, 48, 49, 50, 51, 52, 53]
-  
-  # Note: Update these lists based on your actual fine-grained label IDs
 
 # =============================================================================
 # Output Configuration
