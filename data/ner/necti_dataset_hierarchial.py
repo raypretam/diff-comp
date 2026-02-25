@@ -46,7 +46,7 @@ FINEGRAIN_TO_COARSE_MAP = {
     # Tatpurusha variants (index 0)
     'T': 0, 'T1': 0, 'T2': 0, 'T3': 0, 'T4': 0, 'T5': 0, 'T6': 0, 'T7': 0,
     'K': 0, 'K1': 0, 'K2': 0, 'K3': 0, 'K4': 0, 'K5': 0, 'K6': 0, 'K7': 0, 'Km': 0,
-    'U': 0, 'Tm': 0, 'Tds': 0, 'Tdt': 0, 'Tdu': 0,
+    'U': 0, 'Tm': 0, 'Tds': 0, 'Tdt': 0, 'Tdu': 0, 'Tg': 0, 'Tk': 0, 'Tn': 0, 'Tp': 0,
     
     # Bahuvrihi variants (index 1)
     'Bv': 1, 'Bs': 1, 'Bb': 1,

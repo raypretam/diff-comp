@@ -56,12 +56,12 @@ training:
   stage2_weight: 1.0
   
   # Sequential training (if strategy='sequential')
-  stage1_epochs: 30
-  stage2_epochs: 20
+  stage1_epochs: 50
+  stage2_epochs: 100
   freeze_stage1_for_stage2: True
   
   # General training
-  batch_size: 4
+  batch_size: 16
   max_epochs: 200
   max_steps: 250000
   
@@ -81,7 +81,7 @@ training:
   # Early stopping
   patience: 10
   min_delta: 0.0001
-  monitor: 'val_USS'  # Monitor USS (Unlabeled Span Score)
+  monitor: 'val_LSS'  # Monitor USS (Unlabeled Span Score)
 
 # =============================================================================
 # Data Configuration
