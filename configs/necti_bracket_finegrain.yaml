@@ -1,0 +1,60 @@
+# Configuration for Bracket-Augmented NeCTI (Finegrain, 56 labels)
+# Joint label space: bracket_id × comptype_id
+
+base: 'ner'
+dataset: 'necti_bracket_finegrain'
+num_classes: 392   # placeholder: 7 bracket types × 56 compound types (auto-adjusted)
+backbone: 'xlm-roberta-large'
+time_steps: 1000
+sampling_steps: 10
+ddim_sampling_eta: 0.2
+self_condition: True
+snr_scale: 0.1
+dim_model: 1024
+dim_time: 512
+depth: 6
+objective: 'pred_x0'
+noise_schedule: 'cosine'
+loss_type: 'l2'
+add_lstm: False
+freeze_bert: False
+max_length: 256
+compound_aware: False
+use_graph_encoder: False
+num_gnn_layers: 2
+use_contrastive: False
+contrastive_weight: 0.1
+contrastive_temp: 0.07
+contrastive_type: 'simple'
+
+# Bracket-specific
+use_bracket: True
+bracket_k: 2
+bracket_aux_weight: 0.3
+
+# Data
+data_path: '/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data'
+granularity: 'Finegrain'
+
+# Training
+logger: 'wandb'
+output_dir: 'saved_models/necti_bracket_finegrain'
+batch_size: 4
+num_workers: 8
+max_epochs: 50
+max_steps: 250000
+warmup_steps: 2000
+warmup_ratio: 0.01
+optimizer_type: 'adamW'
+lr_scheduler_type: 'cosine'
+lr_bert: 5e-6
+lr_other: 3e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+accumulation_steps: 4
+patience: 7
+
+# GPU
+use_gpu: True
+gpus: 1
+use_cle_decoding: False

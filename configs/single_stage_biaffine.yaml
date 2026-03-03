@@ -1,0 +1,108 @@
+# Configuration for Single-Stage Bi-Affine Diffusion NeCTI
+# =============================================================================
+# SINGLE-STAGE diffusion with bi-affine pairwise features
+# NO cascade, NO coarse conditioning at inference
+# =============================================================================
+
+# Results comparison:
+#   Baseline (Enc-Diffusion):     USS=98.71, LSS=86.11, EM=68.33  ← Target
+#   Hierarchical Bi-Affine:       USS=92.19, LSS=73.73, EM=74.09  ← FAILED (cascade)
+#   This model (single-stage):    USS~98-99, LSS~87-89, EM~70-74  ← Expected
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+base: 'single_stage_biaffine_necti'
+dataset: 'necti_finegrain'
+
+# Backbone (same as baseline)
+backbone: 'FacebookAI/xlm-roberta-large'
+dim_model: 1024
+freeze_bert: False
+
+# =============================================================================
+# Diffusion Configuration (same as baseline)
+# =============================================================================
+time_steps: 1000
+sampling_steps: 100
+noise_schedule: 'cosine'
+snr_scale: 2.0
+objective: 'pred_x0'
+loss_type: 'l2'
+
+# =============================================================================
+# DiT Configuration - SINGLE STAGE (same depth as your baseline)
+# =============================================================================
+depth: 12           # Same as baseline Enc-Diffusion
+num_heads: 16       # Same as baseline
+mlp_ratio: 4.0
+
+# Number of classes
+num_fine_classes: 56
+num_coarse_classes: 6
+
+# =============================================================================
+# Bi-Affine Configuration
+# =============================================================================
+biaffine:
+  # Auxiliary coarse loss weight (regularization only, NOT conditioning)
+  aux_coarse_weight: 0.1
+  
+  # Dropout in bi-affine encoder
+  dropout: 0.1
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  batch_size: 32
+  max_epochs: 100
+  
+  # Optimizer
+  optimizer_type: 'AdamW'
+  lr_bert: 2e-5           # Same as baseline
+  lr_other: 1e-4          # For DiT and bi-affine modules
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  
+  # Scheduler
+  lr_scheduler_type: 'cosine'
+  warmup_steps: 500
+  
+  # Early stopping
+  patience: 15
+  min_delta: 0.0001
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  data_path: '/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data'
+  granularity: 'Finegrain'
+  use_context: True
+  max_length: 256
+  num_workers: 4
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output:
+  output_dir: 'saved_models/single_stage_biaffine_necti'
+  save_best: True
+  log_every_n_steps: 50
+
+# =============================================================================
+# GPU Configuration
+# =============================================================================
+gpu:
+  use_gpu: True
+  gpus: 1
+  precision: 16  # Mixed precision
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  logger: 'wandb'  # or 'None' to disable
+  project_name: 'single-stage-biaffine-necti'
+  experiment_name: 'single_stage_biaffine_v1'

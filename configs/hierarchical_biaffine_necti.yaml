@@ -1,12 +1,14 @@
-# Configuration for Hierarchical Diffusion NeCTI
-# Two-stage diffusion: Stage 1 (coarse) + Stage 2 (fine, coarse-conditioned)
-# Both stages use global attention (proven architecture)
-# Stage 2 is conditioned on coarse labels via teacher forcing
+# Configuration for Hierarchical Biaffine Diffusion NeCTI
+# Stage 1: Global DiT → coarse labels
+# Stage 2: Biaffine-Conditioned DiT → fine labels
+#   - Biaffine pairwise context enriches conditioning
+#   - Biaffine attention bias in every DiT block
+#   - Coarse label embedding conditioning preserved
 
 # =============================================================================
 # Model Configuration
 # =============================================================================
-base: 'hierarchical_necti'
+base: 'hierarchical_biaffine_necti'
 dataset: 'necti_finegrain'
 
 # Backbone
@@ -25,7 +27,7 @@ objective: 'pred_x0'
 loss_type: 'l2'
 
 # =============================================================================
-# Stage 1: Global Attention (Coarse Labels)
+# Stage 1: Global Attention (Coarse Labels) — unchanged
 # =============================================================================
 stage1:
   depth: 6
@@ -34,21 +36,25 @@ stage1:
   num_classes: 6
 
 # =============================================================================
-# Stage 2: Global Attention (Fine-grained Labels, coarse-conditioned)
+# Stage 2: Biaffine-Conditioned DiT (Fine-grained Labels)
 # =============================================================================
-# stage2:
 stage2:
-  depth: 12      # Match flat baseline capacity (was 6)
+  depth: 12
   num_heads: 16
   mlp_ratio: 4.0
   num_classes: 56
 
 # =============================================================================
+# Biaffine Configuration
+# =============================================================================
+biaffine:
+  dropout: 0.1
+
+# =============================================================================
 # Training Configuration
 # =============================================================================
 training:
-  # Training strategy
-  strategy: 'joint'  # Options: 'joint', 'sequential', 'stage1_only', 'stage2_only'
+  strategy: 'joint'
   
   # Joint training weights
   stage1_weight: 1.0
@@ -69,6 +75,7 @@ training:
   lr_bert: 2e-5
   lr_stage1: 1e-4
   lr_stage2: 1e-4
+  lr_biaffine: 1e-4      # Learning rate for biaffine conditioner
   weight_decay: 0.01
   max_grad_norm: 1.0
   
@@ -78,12 +85,9 @@ training:
   warmup_ratio: 0.05
   
   # Early stopping
-  patience: 10
+  patience: 15           # More patience since biaffine needs time to learn pairwise patterns
   min_delta: 0.0001
-  monitor: 'val_LSS'  # Monitor USS (Unlabeled Span Score)
-
-  span_loss_weight: 0.1      # Weight for span consistency loss
-  contrastive_loss_weight: 0.05  # Weight for hierarchical contrastive loss
+  monitor: 'val_LSS'     # Monitor LSS directly (the metric we want to improve)
 
 # =============================================================================
 # Data Configuration
@@ -98,26 +102,17 @@ data:
 # =============================================================================
 # Label Hierarchy (Fine -> Coarse mapping)
 # =============================================================================
-# This maps each fine-grained label to its coarse category
-# You should populate this based on your actual label set
 label_hierarchy:
-  # Tatpurusa subtypes (Coarse ID: 0)
   tatpurusa_subtypes: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-  
-  # Bahuvrihi subtypes (Coarse ID: 1)
   bahuvrihi_subtypes: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]
-  
-  # Dvandva subtypes (Coarse ID: 2)
   dvandva_subtypes: [35, 36, 37, 38, 39, 40, 41, 42, 43, 44]
-  
-  # Avyayibhava subtypes (Coarse ID: 3)
   avyayibhava_subtypes: [45, 46, 47, 48, 49, 50, 51, 52, 53]
 
 # =============================================================================
 # Output Configuration
 # =============================================================================
 output:
-  output_dir: 'saved_models/hierarchical_necti'
+  output_dir: 'saved_models/hierarchical_biaffine_necti'
   save_best: True
   save_last: True
   log_every_n_steps: 50
@@ -129,12 +124,12 @@ output:
 gpu:
   use_gpu: True
   gpus: 1
-  precision: 16  # Mixed precision training
+  precision: 16
 
 # =============================================================================
 # Logging
 # =============================================================================
 logging:
   logger: 'None'
-  project_name: 'hierarchical-diffusion-necti'
-  experiment_name: 'global-coarse-to-fine-v1'
+  project_name: 'hierarchical-biaffine-diffusion-necti'
+  experiment_name: 'biaffine-coarse-to-fine-v1'

@@ -1,0 +1,58 @@
+# Config template for Bit4 / Bit7 / HexaTagging NeCTI experiments
+# Override --scheme, --granularity, --use_context on the command line.
+
+base: 'ner'
+num_classes: 64          # placeholder; overridden at runtime to num_struct × num_comptypes
+backbone: 'xlm-roberta-large'
+time_steps: 1000
+sampling_steps: 10
+ddim_sampling_eta: 0.2
+self_condition: True
+snr_scale: 0.1
+dim_model: 1024
+dim_time: 512
+depth: 6
+objective: 'pred_x0'
+noise_schedule: 'cosine'
+loss_type: 'l2'
+add_lstm: False
+freeze_bert: False
+max_length: 256
+compound_aware: False
+use_graph_encoder: False
+num_gnn_layers: 2
+use_contrastive: False
+contrastive_weight: 0.1
+contrastive_temp: 0.07
+contrastive_type: 'simple'
+
+# Bit-scheme structural encoding
+scheme: 'bit4'           # overridden at CLI: bit4 | bit7 | hexa
+struct_aux_weight: 0.3   # weight of auxiliary structural head CE loss
+
+# Data
+data_path: '/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data'
+granularity: 'Coarse'    # overridden at CLI: Coarse | Finegrain
+
+# Training
+logger: 'wandb'
+output_dir: 'saved_models/necti_bit_scheme'
+batch_size: 4
+num_workers: 4
+max_epochs: 50
+max_steps: 250000
+warmup_steps: 2000
+warmup_ratio: 0.01
+optimizer_type: 'adamW'
+lr_scheduler_type: 'cosine'
+lr_bert: 5e-6
+lr_other: 3e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+accumulation_steps: 4
+patience: 7
+
+# GPU
+use_gpu: True
+gpus: 1
+use_cle_decoding: False

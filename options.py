@@ -97,7 +97,21 @@ def get_parser():
     # SaCTI-specific args
     parser.add_argument("--language", default='auto', type=str,
                        help="Language for SaCTI: 'sacti', 'marathi', 'english', or 'auto'")
-    
+
+    # Bracketing args (separ-style structural encoding)
+    parser.add_argument("--use_bracket", action='store_true',
+                       help="Use bracket-augmented training (activates trainer_necti_bracket.py)")
+    parser.add_argument("--bracket_k", default=2, type=int,
+                       help="Number of planes for k-planar bracket encoding (1=projective, 2=most NeCTI structures)")
+    parser.add_argument("--bracket_aux_weight", default=0.3, type=float,
+                       help="Weight of the auxiliary bracket head CE loss relative to diffusion loss")
+
+    # Bit-scheme args (bit4 / bit7 / hexa from separ)
+    parser.add_argument("--scheme", default='bit4', type=str, choices=['bit4', 'bit7', 'hexa'],
+                       help="Structural tagging scheme: bit4 (projective), bit7 (2-planar), hexa (BHT-based)")
+    parser.add_argument("--struct_aux_weight", default=0.3, type=float,
+                       help="Weight of auxiliary structural head CE loss (used in trainer_necti_bit_schemes.py)")
+
     args = parser.parse_args()
     default_path = os.path.join(os.getcwd(), "configs", args.config_file)
     with open(default_path, 'r') as f:

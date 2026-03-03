@@ -1,0 +1,64 @@
+# Configuration for Bracket-Augmented NeCTI (Coarse, 4 labels)
+# Each token gets a JOINT label: bracket_id * num_comptypes + comptype_id
+# An auxiliary bracket head provides structural supervision.
+# See: DiffusionSL/data/ner/necti_bracket.py for encoding details.
+
+# Model
+base: 'ner'
+dataset: 'necti_bracket_coarse'
+# num_classes will be overridden automatically to bracket×comptype joint space
+num_classes: 28    # placeholder: 7 bracket types × 4 compound types = 28 (auto-adjusted)
+backbone: 'xlm-roberta-large'
+time_steps: 1000
+sampling_steps: 10
+ddim_sampling_eta: 0.2
+self_condition: True
+snr_scale: 0.1
+dim_model: 1024
+dim_time: 512
+depth: 6
+objective: 'pred_x0'
+noise_schedule: 'cosine'
+loss_type: 'l2'
+add_lstm: False
+freeze_bert: False
+max_length: 256
+compound_aware: False   # bracket encoding subsumes compound-aware logic
+use_graph_encoder: False
+num_gnn_layers: 2
+use_contrastive: False
+contrastive_weight: 0.1
+contrastive_temp: 0.07
+contrastive_type: 'simple'
+
+# Bracket-specific
+use_bracket: True
+bracket_k: 2            # k-planar: 2 covers virtually all Sanskrit compound nestings
+bracket_aux_weight: 0.3 # auxiliary bracket CE loss weight
+
+# Data
+data_path: '/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data'
+granularity: 'Coarse'
+
+# Training
+logger: 'wandb'
+output_dir: 'saved_models/necti_bracket_coarse'
+batch_size: 4
+num_workers: 8
+max_epochs: 50
+max_steps: 250000
+warmup_steps: 2000
+warmup_ratio: 0.01
+optimizer_type: 'adamW'
+lr_scheduler_type: 'cosine'
+lr_bert: 5e-6
+lr_other: 3e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+accumulation_steps: 4
+patience: 7
+
+# GPU
+use_gpu: True
+gpus: 1
+use_cle_decoding: False
