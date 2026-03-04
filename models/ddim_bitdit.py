@@ -14,6 +14,7 @@ from .dit_discrete import DiT
 from .compound_encoder import CompoundEncoder, CompoundDecoder, extract_compound_masks_from_labels
 from .graph_compound_encoder import GraphCompoundEncoder
 from .contrastive_loss import create_contrastive_loss
+from .mst_decoder import MSTDecoder
 
 __all__ = ["BitDit"]
 
@@ -100,7 +101,8 @@ class BitDit(nn.Module):
                  label_set=None,
                  use_contrastive: bool = False,
                  contrastive_weight: float = 0.1,
-                 contrastive_config=None):
+                 contrastive_config=None,
+                 use_mst: bool = False):
         super().__init__()
 
         self.device = torch.device(device)
@@ -156,6 +158,14 @@ class BitDit(nn.Module):
         self.loss_type = loss_type
         self.compound_aware = compound_aware
         self.label_set = label_set
+        self.use_mst = use_mst
+        
+        # Initialize MST decoder if enabled
+        if use_mst and label_set is not None:
+            self.mst_decoder = MSTDecoder(label_set)
+            print(f"MST decoding enabled (greedy constraint mode for reliability)")
+        else:
+            self.mst_decoder = None
         
         # Contrastive learning components
         self.use_contrastive = use_contrastive
@@ -449,6 +459,18 @@ class BitDit(nn.Module):
                     
                     bit_seq = self.compound_decoder(bit_seq_compounds, compound_masks)
                     results = bits_to_decimal(bit_seq, self.bits.item())
+                    
+                    # Apply MST decoding if enabled
+                    if self.use_mst and self.mst_decoder is not None:
+                        num_labels = len(self.label_set)
+                        batch_size, seq_len = results.shape
+                        safe_results = results.clamp(min=0, max=num_labels - 1)
+                        logits = torch.zeros(batch_size, seq_len, num_labels, device=results.device)
+                        logits.scatter_(2, safe_results.unsqueeze(-1), 10.0)
+                        logits = logits * label_mask.unsqueeze(-1).float()
+                        results = self.mst_decoder.decode(logits, label_mask, use_greedy=True)
+                        results = results.masked_fill(label_mask == 0, -100)
+                    
                     return results, [results] # Return as list for consistency
                     
                 except Exception as e:
@@ -462,6 +484,22 @@ class BitDit(nn.Module):
                 bit_seq, path_x = results
                 path_x = torch.stack([bits_to_decimal(r, self.bits.item()) for r in path_x], dim=1)
                 results = bits_to_decimal(bit_seq, self.bits.item())
+                
+                # Apply MST decoding if enabled
+                if self.use_mst and self.mst_decoder is not None:
+                    num_labels = len(self.label_set)
+                    batch_size, seq_len = results.shape
+                    # Clamp to valid range: results may contain -100 (ignore index) for
+                    # padding tokens, which would crash scatter_ with an OOB index.
+                    safe_results = results.clamp(min=0, max=num_labels - 1)
+                    logits = torch.zeros(batch_size, seq_len, num_labels, device=results.device)
+                    logits.scatter_(2, safe_results.unsqueeze(-1), 10.0)
+                    # Zero-out padding positions so MST never acts on them
+                    logits = logits * label_mask.unsqueeze(-1).float()
+                    results = self.mst_decoder.decode(logits, label_mask, use_greedy=True)
+                    # Restore -100 for positions that were originally padding
+                    results = results.masked_fill(label_mask == 0, -100)
+                
                 return results, path_x
 
         # --- TRAINING MODE ---

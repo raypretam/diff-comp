@@ -61,6 +61,11 @@ class NeCTIInference:
         print(f"\nUsing data mode: {context_mode}")
         print(f"Number of classes: {len(self.label_set)}")
         
+        # Check if model was trained with MST
+        use_mst = getattr(self.args, 'use_mst', False)
+        if use_mst:
+            print(f"Model trained with MST decoding: enabled")
+        
         # Initialize model
         self.model = BitDit(
             device=self.device,
@@ -81,7 +86,9 @@ class NeCTIInference:
             freeze_bert=self.args.freeze_bert,
             max_length=self.args.max_length,
             depth=self.args.depth,
-            num_labels=len(self.label_set)
+            num_labels=len(self.label_set),
+            label_set=self.label_set,
+            use_mst=use_mst
         )
         
         # Load model weights

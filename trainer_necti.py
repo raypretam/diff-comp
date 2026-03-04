@@ -74,7 +74,9 @@ class NeCTITrainer:
             freeze_bert=self.args.freeze_bert,
             max_length=self.args.max_length,
             depth=self.args.depth,
-            num_labels=len(self.label_set)
+            num_labels=len(self.label_set),
+            label_set=self.label_set,
+            use_mst=self.args.use_mst if hasattr(self.args, 'use_mst') else False
         )
         
         if self.args.logger == "wandb":

@@ -10,7 +10,7 @@ time_steps: 1000
 sampling_steps: 10
 ddim_sampling_eta: 0.2
 self_condition: True
-snr_scale: 0.1  # Increased for better signal-to-noise ratio
+snr_scale: 1.0  # Increased for better signal-to-noise ratio
 dim_model: 1024  # XLM-R hidden size
 dim_time: 512  # Increased from 256 for richer temporal embeddings
 depth: 6  # Doubled from 6 for deeper architecture
@@ -18,9 +18,9 @@ depth: 6  # Doubled from 6 for deeper architecture
 objective: 'pred_x0'
 noise_schedule: 'cosine'  # Changed from linear to cosine
 loss_type: 'l2'
-compound_aware: True  # Enable compound-level diffusion (NOW WITH WORKING INFERENCE!)
+compound_aware: False  # Enable compound-level diffusion (NOW WITH WORKING INFERENCE!)
 compound_pooling: 'mean'  # Pooling method for compound encoding
-use_graph_encoder: True  # Use Graph-Aware Encoder to model dependencies BETWEEN compounds
+use_graph_encoder: False  # Use Graph-Aware Encoder to model dependencies BETWEEN compounds
 num_gnn_layers: 2  # Number of GNN layers for inter-compound message passing
 add_lstm: False  # Set to True to enable LSTM for word-level features (requires words2pieces)
 freeze_bert: False
@@ -29,7 +29,7 @@ network_architecture: 'transformer'
 ensemble: False  
 
 # Data Configuration
-data_path: '/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data'
+data_path: '/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data'
 granularity: 'Coarse'
 
 # Training Configuration
@@ -39,7 +39,7 @@ batch_size: 1  # Reduced due to larger model
 num_workers: 8
 max_epochs: 50
 max_steps: 250000  # Doubled for more training
-warmup_steps: 2000  # Increased warmup
+warmup_steps: 1000  # Increased warmup
 warmup_ratio: 0.01
 optimizer_type: 'adamW'
 lr_scheduler_type: 'cosine'  # Changed to cosine for better convergence
