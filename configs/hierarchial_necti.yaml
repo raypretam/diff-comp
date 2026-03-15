@@ -1,7 +1,6 @@
 # Configuration for Hierarchical Diffusion NeCTI
-# Two-stage diffusion: Stage 1 (coarse) + Stage 2 (fine, coarse-conditioned)
-# Both stages use global attention (proven architecture)
-# Stage 2 is conditioned on coarse labels via teacher forcing
+# Two-stage diffusion: Global attention (coarse) + Local attention (fine-grained)
+# Addresses Hahn (2020) theoretical limitation of global attention
 
 # =============================================================================
 # Model Configuration
@@ -10,8 +9,8 @@ base: 'hierarchical_necti'
 dataset: 'necti_finegrain'
 
 # Backbone
-backbone: 'FacebookAI/xlm-roberta-large'
-dim_model: 1024
+backbone: 'FacebookAI/xlm-roberta-large'  # Multilingual Indic BERT
+dim_model: 1024  # XLM-RoBERTa-large hidden size
 freeze_bert: False
 
 # =============================================================================
@@ -20,7 +19,7 @@ freeze_bert: False
 time_steps: 1000
 sampling_steps: 100
 noise_schedule: 'cosine'
-snr_scale: 2.0
+snr_scale: 1.0
 objective: 'pred_x0'
 loss_type: 'l2'
 
@@ -28,20 +27,22 @@ loss_type: 'l2'
 # Stage 1: Global Attention (Coarse Labels)
 # =============================================================================
 stage1:
-  depth: 6
-  num_heads: 16
+  depth: 12
+  num_heads: 16  # Changed from 12 to 16 (1024 / 16 = 64 dim per head)
   mlp_ratio: 4.0
-  num_classes: 6
+  num_classes: 6  # Changed from 7 to 6: Tatpurusha(0), Bahuvrihi(1), Dvandva(2), Avyayibhava(3), ROOT(4), No_rel(5)
+  # Full global attention - works well for coarse categories
 
 # =============================================================================
-# Stage 2: Global Attention (Fine-grained Labels, coarse-conditioned)
+# Stage 2: Local Attention (Fine-grained Labels)
 # =============================================================================
-# stage2:
 stage2:
-  depth: 12      # Match flat baseline capacity (was 6)
-  num_heads: 16
+  depth: 8  # Fewer layers - local patterns are simpler
+  num_heads: 16  # Changed from 8 to 16 (1024 / 16 = 64 dim per head)
   mlp_ratio: 4.0
-  num_classes: 56
+  num_classes: 56  # Fine-grained subtypes
+  window_size: 5  # Local attention window (2 left + self + 2 right)
+  # Key insight: Fine-grained case relations only need local context
 
 # =============================================================================
 # Training Configuration
@@ -55,14 +56,14 @@ training:
   stage2_weight: 1.0
   
   # Sequential training (if strategy='sequential')
-  stage1_epochs: 50
-  stage2_epochs: 100
+  stage1_epochs: 30
+  stage2_epochs: 20
   freeze_stage1_for_stage2: True
   
   # General training
-  batch_size: 32
+  batch_size: 16
   max_epochs: 200
-  max_steps: 250000
+  max_steps: 500000
   
   # Optimizer
   optimizer_type: 'AdamW'
@@ -80,10 +81,7 @@ training:
   # Early stopping
   patience: 10
   min_delta: 0.0001
-  monitor: 'val_LSS'  # Monitor USS (Unlabeled Span Score)
-
-  span_loss_weight: 0.1      # Weight for span consistency loss
-  contrastive_loss_weight: 0.05  # Weight for hierarchical contrastive loss
+  monitor: 'val_USS'  # Monitor USS (Unlabeled Span Score)
 
 # =============================================================================
 # Data Configuration
@@ -92,7 +90,7 @@ data:
   data_path: '/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data'
   granularity: 'Finegrain'
   use_context: True
-  max_length: 256
+  max_length: 128
   num_workers: 4
 
 # =============================================================================
@@ -112,6 +110,8 @@ label_hierarchy:
   
   # Avyayibhava subtypes (Coarse ID: 3)
   avyayibhava_subtypes: [45, 46, 47, 48, 49, 50, 51, 52, 53]
+  
+  # Note: Update these lists based on your actual fine-grained label IDs
 
 # =============================================================================
 # Output Configuration
@@ -135,6 +135,6 @@ gpu:
 # Logging
 # =============================================================================
 logging:
-  logger: 'None'
+  logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
   project_name: 'hierarchical-diffusion-necti'
-  experiment_name: 'global-coarse-to-fine-v1'
+  experiment_name: 'local-refinement-v1'
