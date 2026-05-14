@@ -56,7 +56,7 @@ class Trainer:
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)
         self.collate_fn = Collator1D(self.tokenizer)
 
-        self.train_dataloader = self._get_train_dataloader('train', 2)
+        self.train_dataloader = self._get_train_dataloader('train', self.args.batch_size)
         self.dev_dataloader = self._get_dataloader('dev', self.args.batch_size)
         self.test_dataloader = self._get_dataloader('test', self.args.batch_size)
         self.steps = self.args.max_steps

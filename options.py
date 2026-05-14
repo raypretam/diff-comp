@@ -69,9 +69,9 @@ def get_parser():
                        help="Use 'With Context' data instead of 'Without Context' data")
     parser.add_argument("--depth", default=6, type=int, help="Depth of DiT model")
     parser.add_argument("--max_grad_norm", default=1.0, type=float, help="Max gradient norm for clipping")
-    parser.add_argument("--use_cle_decoding", action='store_true', default=True,
+    parser.add_argument("--use_cle_decoding", action='store_true', default=False,
                        help="Use Chu-Liu-Edmonds algorithm for structured decoding during inference")
-    parser.add_argument("--use_mst", action='store_true',
+    parser.add_argument("--use_mst", action='store_true', default=False,
                        help="Use MST (Maximum Spanning Tree) decoding to enforce tree structure constraints")
     parser.add_argument("--patience", default=5, type=int, help="Early stopping patience (number of epochs)")
     parser.add_argument("--min_delta", default=0.0001, type=float, help="Minimum improvement for early stopping")

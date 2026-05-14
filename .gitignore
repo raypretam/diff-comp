@@ -11,3 +11,13 @@ data/ner/__pycache__/
 data/ner/__pycache__/necti_dataset.cpython-312.pyc
 inference_results/
 saved_models/
+output/
+mahanama_ner/
+/home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_coarse/
+/home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_fine/
+Diff*
+*.md
+*.tex
+*.json
+*.parquet
+*.txt

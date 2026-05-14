@@ -142,9 +142,6 @@ class NERDataset1D(Dataset):
         path = os.path.join(os.getcwd(), 'data', 'ner', dataset, mode + '.json')
         with open(path, 'r') as f:
             self.data = json.load(f)
-            if mode == 'train':
-                import random
-                self.data = random.sample(self.data, 20)
         self.label_set = label_set
 
     def __len__(self):

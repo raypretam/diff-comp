@@ -30,7 +30,7 @@ stage1:
   depth: 12
   num_heads: 16  # Changed from 12 to 16 (1024 / 16 = 64 dim per head)
   mlp_ratio: 4.0
-  num_classes: 6  # Changed from 7 to 6: Tatpurusha(0), Bahuvrihi(1), Dvandva(2), Avyayibhava(3), ROOT(4), No_rel(5)
+  num_classes: 6 # Coarse categories (e.g., Tatpurusa, Bahuvrihi, Dvandva, Avyayibhava, etc.)
   # Full global attention - works well for coarse categories
 
 # =============================================================================
@@ -89,7 +89,7 @@ training:
 data:
   data_path: '/home/pretam-pg/DepNeCTI/DepNeCTI-XLMR/Trankit_Data'
   granularity: 'Finegrain'
-  use_context: True
+  use_context: False
   max_length: 128
   num_workers: 4
 
@@ -117,7 +117,7 @@ label_hierarchy:
 # Output Configuration
 # =============================================================================
 output:
-  output_dir: 'saved_models/hierarchical_necti'
+  output_dir: 'saved_models/hierarchical_necti_window_5'
   save_best: True
   save_last: True
   log_every_n_steps: 50
@@ -135,6 +135,6 @@ gpu:
 # Logging
 # =============================================================================
 logging:
-  logger: 'wandb'  # Options: 'wandb', 'tensorboard', 'None'
+  logger: 'None'  # Options: 'wandb', 'tensorboard', 'None'
   project_name: 'hierarchical-diffusion-necti'
   experiment_name: 'local-refinement-v1'
