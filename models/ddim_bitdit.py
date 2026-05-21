@@ -102,7 +102,13 @@ class BitDit(nn.Module):
                  use_contrastive: bool = False,
                  contrastive_weight: float = 0.1,
                  contrastive_config=None,
-                 use_mst: bool = False):
+                 use_mst: bool = False,
+                 use_hyp_encoder: bool = False,
+                 hyp_layers: int = 2,
+                 hyp_num_heads: int = 8,
+                 hyp_curvature: float = 1.0,
+                 hyp_learnable_curvature: bool = True,
+                 hyp_dropout: float = 0.1):
         super().__init__()
 
         self.device = torch.device(device)
@@ -114,9 +120,26 @@ class BitDit(nn.Module):
 
         # backbone: pretrained BERT or RoBERTA, name or path
         self.backbone = AutoModel.from_pretrained(backbone)
-        
+
         # Get actual BERT dimension
         self.bert_dim = self.backbone.config.hidden_size
+
+        # Optional hyperbolic Hawkes encoder (hHTM-style) on top of BERT features
+        self.use_hyp_encoder = use_hyp_encoder
+        if use_hyp_encoder:
+            from models.hyp_hawkes_encoder import HypHawkesEncoder
+            self.hyp_encoder = HypHawkesEncoder(
+                dim=self.bert_dim,
+                num_layers=hyp_layers,
+                num_heads=hyp_num_heads,
+                dropout=hyp_dropout,
+                init_curvature=hyp_curvature,
+                learnable_curvature=hyp_learnable_curvature,
+            )
+            print(f"✓ Hyperbolic Hawkes encoder enabled "
+                  f"(layers={hyp_layers}, heads={hyp_num_heads}, c={hyp_curvature})")
+        else:
+            self.hyp_encoder = None
 
         # Auxiliary Span Consistency Head (Binary: Is Compound vs Not?)
         self.span_classifier = nn.Linear(self.bert_dim, 2) 
@@ -419,6 +442,9 @@ class BitDit(nn.Module):
         # 1. Feature Extraction
         label_mask = (seq_labels != -100).long()
         bert_output = self.backbone(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+
+        if self.hyp_encoder is not None:
+            bert_output = self.hyp_encoder(bert_output, attention_mask)
 
         if self.add_lstm:
             min_value = torch.min(bert_output).item()

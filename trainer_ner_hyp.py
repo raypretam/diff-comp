@@ -1,3 +1,10 @@
+"""
+NER trainer variant with hHTM-style hyperbolic Hawkes encoder on top of BERT.
+
+Same training loop / data pipeline as `trainer_ner.py`, but instantiates
+`BitDit` with `use_hyp_encoder=True` and forwards the related hyperbolic
+hyperparameters from the config.
+"""
 
 import os
 from argparse import Namespace
@@ -50,7 +57,13 @@ class Trainer:
                             freeze_bert=self.args.freeze_bert,
                             max_length=self.args.max_length,
                             depth=self.args.depth,
-                            num_labels=len(self.label_set))
+                            num_labels=len(self.label_set),
+                            use_hyp_encoder=getattr(self.args, 'use_hyp_encoder', True),
+                            hyp_layers=getattr(self.args, 'hyp_layers', 2),
+                            hyp_num_heads=getattr(self.args, 'hyp_num_heads', 8),
+                            hyp_curvature=getattr(self.args, 'hyp_curvature', 1.0),
+                            hyp_learnable_curvature=getattr(self.args, 'hyp_learnable_curvature', True),
+                            hyp_dropout=getattr(self.args, 'hyp_dropout', 0.1))
         if self.args.logger == "wandb":
             wandb.watch(self.model, log_freq=1000)
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)

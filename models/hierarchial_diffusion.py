@@ -277,9 +277,13 @@ class LocalRefinementDiT(nn.Module):
         t_emb = t_emb.unsqueeze(1).expand(-1, x.shape[1], -1)  # [batch, seq_len, hidden]
         
         # Coarse label conditioning
-        # Map -100 (padding) to num_coarse_classes index to avoid negative indexing
+        # Map -100 (padding) to the last embedding index to avoid negative indexing.
+        # During inference coarse_labels are sampled predictions (bits_to_decimal),
+        # which can decode to values outside [0, num_coarse_classes-1]; clamp so the
+        # embedding lookup never goes out of bounds (avoids CUDA device-side assert).
         coarse_labels_clamped = coarse_labels.clone()
         coarse_labels_clamped[coarse_labels == -100] = self.coarse_embed.num_embeddings - 1
+        coarse_labels_clamped = coarse_labels_clamped.clamp_(0, self.coarse_embed.num_embeddings - 1)
         coarse_emb = self.coarse_embed(coarse_labels_clamped)  # [batch, seq_len, hidden]
         
         # Feature conditioning

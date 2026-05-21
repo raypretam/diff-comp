@@ -1,0 +1,109 @@
+# Configuration for Hierarchical Diffusion NER (Mahanama)
+# Two-stage diffusion: Global attention (coarse types) + Local attention (fine-grained BMES tags)
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+base: 'hierarchical_ner'
+dataset: 'mahanama_ner_fine'
+
+# Backbone
+backbone: 'google/muril-large-cased'
+dim_model: 1024
+freeze_bert: False
+
+# =============================================================================
+# Diffusion Configuration
+# =============================================================================
+time_steps: 1000
+sampling_steps: 10
+noise_schedule: 'cosine'
+snr_scale: 1.0
+objective: 'pred_x0'
+loss_type: 'l2'
+
+# =============================================================================
+# Stage 1: Global Attention (Coarse Entity Types)
+# =============================================================================
+stage1:
+  depth: 12
+  num_heads: 16
+  mlp_ratio: 4.0
+  # Coarse classes: Person, Location, NORP, Misc, Time, O (= 6)
+  num_classes: 6
+
+# =============================================================================
+# Stage 2: Local Attention (Fine-grained BMES tags)
+# =============================================================================
+stage2:
+  depth: 8
+  num_heads: 16
+  mlp_ratio: 4.0
+  num_classes: 77   # number of fine-grained BMES labels in mahanama_ner_fine
+  window_size: 5
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  strategy: 'joint'   # 'joint' | 'sequential' | 'stage1_only' | 'stage2_only'
+
+  stage1_weight: 1.0
+  stage2_weight: 1.0
+
+  stage1_epochs: 10
+  stage2_epochs: 5
+  freeze_stage1_for_stage2: True
+
+  batch_size: 64
+  max_epochs: 30
+  max_steps: 500000
+
+  optimizer_type: 'AdamW'
+  lr_bert: 2e-5
+  lr_stage1: 1e-4
+  lr_stage2: 1e-4
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  lr_scheduler_type: 'cosine'
+  warmup_steps: 500
+  warmup_ratio: 0.05
+
+  patience: 10
+  min_delta: 0.0001
+  monitor: 'val_f1'
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  dataset: 'mahanama_ner_fine'
+  max_length: 128
+  num_workers: 2
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output:
+  output_dir: 'saved_models/hierarchical_mahanama_ner'
+  save_best: True
+  save_last: True
+  log_every_n_steps: 50
+  eval_every_n_epochs: 1
+
+# =============================================================================
+# GPU Configuration
+# =============================================================================
+gpu:
+  use_gpu: True
+  gpus: 0
+  precision: 16
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  logger: 'None'   # 'wandb' | 'tensorboard' | 'None'
+  project_name: 'hierarchical-diffusion-mahanama-ner'
+  experiment_name: 'v1'
