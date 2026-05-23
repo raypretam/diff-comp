@@ -108,7 +108,14 @@ class BitDit(nn.Module):
                  hyp_num_heads: int = 8,
                  hyp_curvature: float = 1.0,
                  hyp_learnable_curvature: bool = True,
-                 hyp_dropout: float = 0.1):
+                 hyp_dropout: float = 0.1,
+                 use_hyp_contrastive: bool = False,
+                 hyp_contrastive_weight: float = 0.001,
+                 hyp_proj_dim: int = 128,
+                 hyp_contrastive_curvature: float = 1.0,
+                 hyp_temperature: float = 0.2,
+                 hyp_w_sibling: float = 1.0,
+                 hyp_w_cross: float = 2.0):
         super().__init__()
 
         self.device = torch.device(device)
@@ -140,6 +147,34 @@ class BitDit(nn.Module):
                   f"(layers={hyp_layers}, heads={hyp_num_heads}, c={hyp_curvature})")
         else:
             self.hyp_encoder = None
+
+        # Optional hyperbolic hierarchical contrastive auxiliary loss.
+        # Organizes token features on the Poincaré ball by the known
+        # fine->coarse label hierarchy of the mahanama NER dataset.
+        self.use_hyp_contrastive = use_hyp_contrastive
+        self.hyp_contrastive_weight = hyp_contrastive_weight
+        if use_hyp_contrastive:
+            if label_set is None:
+                raise ValueError("use_hyp_contrastive=True requires label_set to be passed to BitDit")
+            from models.hyp_hier_contrastive import HyperbolicHierarchicalContrastive
+            from data.ner.mahanama_hierarchy import build_fine_to_coarse
+            fine_to_coarse, num_coarse, o_label_id = build_fine_to_coarse(label_set)
+            self.hyp_contrastive = HyperbolicHierarchicalContrastive(
+                in_dim=self.bert_dim,
+                fine_to_coarse=fine_to_coarse,
+                num_coarse=num_coarse,
+                o_label_id=o_label_id,
+                proj_dim=hyp_proj_dim,
+                curvature=hyp_contrastive_curvature,
+                temperature=hyp_temperature,
+                w_sibling=hyp_w_sibling,
+                w_cross=hyp_w_cross,
+            )
+            print(f"✓ Hyperbolic hierarchical contrastive loss enabled "
+                  f"(weight={hyp_contrastive_weight}, coarse={num_coarse}, "
+                  f"w_sib={hyp_w_sibling}, w_cross={hyp_w_cross})")
+        else:
+            self.hyp_contrastive = None
 
         # Auxiliary Span Consistency Head (Binary: Is Compound vs Not?)
         self.span_classifier = nn.Linear(self.bert_dim, 2) 
@@ -617,6 +652,14 @@ class BitDit(nn.Module):
                  contrastive_l = self.contrastive_loss_fn(pred_tok, seq_labels, label_mask)
                  total_loss += self.contrastive_weight * contrastive_l
                  loss_components['contrastive'] = contrastive_l.item()
+
+            # Hyperbolic Hierarchical Contrastive Loss (Optional)
+            # Computed on encoder features (independent of diffusion noise),
+            # so no timestep gating is needed.
+            if self.hyp_contrastive is not None:
+                hyp_l = self.hyp_contrastive(features, seq_labels)
+                total_loss += self.hyp_contrastive_weight * hyp_l
+                loss_components['hyp_contrastive'] = hyp_l.item()
 
             # TASK 3: Span Classification (Your New Auxiliary Head)
             if span_labels is not None:

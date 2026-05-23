@@ -58,12 +58,20 @@ class Trainer:
                             max_length=self.args.max_length,
                             depth=self.args.depth,
                             num_labels=len(self.label_set),
+                            label_set=self.label_set,
                             use_hyp_encoder=getattr(self.args, 'use_hyp_encoder', True),
                             hyp_layers=getattr(self.args, 'hyp_layers', 2),
                             hyp_num_heads=getattr(self.args, 'hyp_num_heads', 8),
                             hyp_curvature=getattr(self.args, 'hyp_curvature', 1.0),
                             hyp_learnable_curvature=getattr(self.args, 'hyp_learnable_curvature', True),
-                            hyp_dropout=getattr(self.args, 'hyp_dropout', 0.1))
+                            hyp_dropout=getattr(self.args, 'hyp_dropout', 0.1),
+                            use_hyp_contrastive=getattr(self.args, 'use_hyp_contrastive', True),
+                            hyp_contrastive_weight=getattr(self.args, 'hyp_contrastive_weight', 0.1),
+                            hyp_proj_dim=getattr(self.args, 'hyp_proj_dim', 128),
+                            hyp_contrastive_curvature=getattr(self.args, 'hyp_contrastive_curvature', 1.0),
+                            hyp_temperature=getattr(self.args, 'hyp_temperature', 0.2),
+                            hyp_w_sibling=getattr(self.args, 'hyp_w_sibling', 1.0),
+                            hyp_w_cross=getattr(self.args, 'hyp_w_cross', 2.0))
         if self.args.logger == "wandb":
             wandb.watch(self.model, log_freq=1000)
         self.tokenizer = AutoTokenizer.from_pretrained(self.args.backbone)

@@ -30,6 +30,23 @@ hyp_curvature: 1.0
 hyp_learnable_curvature: True
 hyp_dropout: 0.1
 
+# Hyperbolic hierarchical contrastive loss (uses the known fine->coarse
+# label hierarchy of mahanama_ner: Person/Location/NORP/Misc/Time/O).
+# Organizes token features on the Poincaré ball: same-fine pulled together,
+# same-coarse siblings kept close, cross-coarse pushed apart; coarse parent
+# anchors near the origin with norm-ordering (depth) entailment.
+use_hyp_contrastive: True
+# NOTE on scale: the diffusion loss (diff_tok) is ~0.01 while the raw
+# hyperbolic contrastive loss is ~7-8, so the weight must be small to keep
+# this an *auxiliary* nudge rather than the dominant objective.
+# 0.001 -> contributes ~0.008, comparable to diff_tok. Tune from here.
+hyp_contrastive_weight: 0.001  # key knob to tune
+hyp_proj_dim: 128             # contrastive projection dim
+hyp_contrastive_curvature: 1.0
+hyp_temperature: 0.5
+hyp_w_sibling: 1.0            # repulsion weight for same-coarse negatives
+hyp_w_cross: 2.0             # repulsion weight for cross-coarse negatives (> sibling)
+
 max_epochs: 20
 batch_size: 16
 lr_bert: 1e-5
