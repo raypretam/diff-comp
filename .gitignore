@@ -16,7 +16,7 @@ mahanama_ner/
 /home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_coarse/
 /home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_fine/
 Diff*
-*.md
+^README\.md$
 *.tex
 *.json
 *.parquet

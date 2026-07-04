@@ -151,6 +151,12 @@ class HierarchicalNERTrainer:
     # ------------------------------------------------------------------
     def _setup_model(self):
         c = self.config
+        hyp_cfg = c.get('hyp_contrastive', {}) or {}
+        try:
+            o_label_id = self.fine_label_set.label2id('O')
+        except Exception:
+            o_label_id = -1
+
         self.model = create_hierarchical_model(
             device=str(self.device),
             backbone=c['backbone'],
@@ -170,6 +176,16 @@ class HierarchicalNERTrainer:
             fine_to_coarse_map=self.fine_to_coarse_map,
             objective=c['objective'],
             loss_type=c['loss_type'],
+            # hyperbolic hierarchical contrastive aux loss
+            use_hyp_contrastive=hyp_cfg.get('enabled', False),
+            hyp_contrastive_weight=float(hyp_cfg.get('weight', 0.001)),
+            hyp_proj_dim=int(hyp_cfg.get('proj_dim', 128)),
+            hyp_contrastive_curvature=float(hyp_cfg.get('curvature', 1.0)),
+            hyp_temperature=float(hyp_cfg.get('temperature', 0.5)),
+            hyp_w_sibling=float(hyp_cfg.get('w_sibling', 1.0)),
+            hyp_w_cross=float(hyp_cfg.get('w_cross', 2.0)),
+            hyp_stop_grad_to_backbone=bool(hyp_cfg.get('stop_grad_to_backbone', True)),
+            o_label_id=o_label_id,
         )
 
         if self.args.stage1_checkpoint:
@@ -230,7 +246,14 @@ class HierarchicalNERTrainer:
         total_loss = 0.0
         s1_sum = 0.0
         s2_sum = 0.0
+        hyp_sum = 0.0
         n = 0
+
+        def _unpack(out):
+            """Normalise model output to (loss_tensor, components_dict)."""
+            if isinstance(out, dict):
+                return out['loss'], out
+            return out, {}
 
         pbar = tqdm(self.train_loader, desc=f'Epoch {self.current_epoch}')
         for batch in pbar:
@@ -250,12 +273,11 @@ class HierarchicalNERTrainer:
             if self.scaler:
                 with torch.amp.autocast('cuda'):
                     out = compute_loss()
-                    if stage == 'both':
-                        loss = out['loss']
-                        s1_sum += out['stage1_loss'].item()
-                        s2_sum += out['stage2_loss'].item()
-                    else:
-                        loss = out
+                    loss, comps = _unpack(out)
+                    if 'stage1_loss' in comps: s1_sum += comps['stage1_loss'].item()
+                    if 'stage2_loss' in comps: s2_sum += comps['stage2_loss'].item()
+                    if 'hyp_contrastive_loss' in comps:
+                        hyp_sum += comps['hyp_contrastive_loss'].item()
 
                 if torch.isnan(loss):
                     print(f"NaN loss at step {self.global_step}, skipping")
@@ -270,12 +292,11 @@ class HierarchicalNERTrainer:
                 self.scheduler.step()
             else:
                 out = compute_loss()
-                if stage == 'both':
-                    loss = out['loss']
-                    s1_sum += out['stage1_loss'].item()
-                    s2_sum += out['stage2_loss'].item()
-                else:
-                    loss = out
+                loss, comps = _unpack(out)
+                if 'stage1_loss' in comps: s1_sum += comps['stage1_loss'].item()
+                if 'stage2_loss' in comps: s2_sum += comps['stage2_loss'].item()
+                if 'hyp_contrastive_loss' in comps:
+                    hyp_sum += comps['hyp_contrastive_loss'].item()
 
                 if torch.isnan(loss):
                     print(f"NaN loss at step {self.global_step}, skipping")
@@ -298,15 +319,18 @@ class HierarchicalNERTrainer:
 
             if self.logger == 'wandb' and self.global_step % 50 == 0:
                 log = {'train/loss': loss.item(), 'train/lr': self.scheduler.get_last_lr()[0]}
-                if stage == 'both':
-                    log['train/stage1_loss'] = out['stage1_loss'].item()
-                    log['train/stage2_loss'] = out['stage2_loss'].item()
+                if 'stage1_loss' in comps: log['train/stage1_loss'] = comps['stage1_loss'].item()
+                if 'stage2_loss' in comps: log['train/stage2_loss'] = comps['stage2_loss'].item()
+                if 'hyp_contrastive_loss' in comps:
+                    log['train/hyp_contrastive'] = comps['hyp_contrastive_loss'].item()
                 self.wandb.log(log, step=self.global_step)
 
         metrics = {'loss': total_loss / max(1, n)}
         if stage == 'both':
             metrics['stage1_loss'] = s1_sum / max(1, n)
             metrics['stage2_loss'] = s2_sum / max(1, n)
+        if hyp_sum > 0:
+            metrics['hyp_contrastive_loss'] = hyp_sum / max(1, n)
         return metrics
 
     # ------------------------------------------------------------------
@@ -506,8 +530,51 @@ def main() -> None:
         trainer.current_epoch = ckpt['epoch']
         trainer.global_step = ckpt['global_step']
         trainer.best_metric = ckpt['best_metric']
+        sanitize_nan_state(trainer)
 
     trainer.train()
+
+
+def sanitize_nan_state(trainer) -> None:
+    """Detect NaN/Inf parameters from a poisoned checkpoint and reinitialize
+    them, then clear their Adam moment state (otherwise NaN moments would
+    re-poison the params on the very first step).
+
+    Triggered automatically on --resume so a corrupted checkpoint doesn't
+    immediately reproduce the same NaN.
+    """
+    bad_params = []
+    for name, p in trainer.model.named_parameters():
+        if not torch.isfinite(p).all():
+            bad_params.append((name, p))
+
+    if not bad_params:
+        print("[sanitize] all parameters finite, nothing to fix")
+        return
+
+    print(f"[sanitize] {len(bad_params)} parameter tensors contain NaN/Inf - "
+          f"reinitializing:")
+    for name, p in bad_params:
+        print(f"  - {name}  shape={tuple(p.shape)}")
+        with torch.no_grad():
+            if 'parent_anchors' in name:
+                # tangent-space init near origin, same as module __init__
+                p.copy_(torch.randn_like(p) * 0.01)
+            elif p.dim() >= 2:
+                torch.nn.init.kaiming_uniform_(p, a=5 ** 0.5)
+            else:
+                p.zero_()
+
+    # Clear Adam moment state for re-init'd params so NaN moments cannot
+    # immediately re-poison the params on the next optimizer.step().
+    bad_set = {id(p) for _, p in bad_params}
+    cleared = 0
+    for group in trainer.optimizer.param_groups:
+        for p in group['params']:
+            if id(p) in bad_set and p in trainer.optimizer.state:
+                trainer.optimizer.state[p] = {}
+                cleared += 1
+    print(f"[sanitize] cleared Adam state for {cleared} parameter tensors")
 
 
 if __name__ == '__main__':

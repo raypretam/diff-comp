@@ -55,7 +55,7 @@ training:
   stage2_epochs: 5
   freeze_stage1_for_stage2: True
 
-  batch_size: 64
+  batch_size: 16
   max_epochs: 30
   max_steps: 500000
 
@@ -83,6 +83,28 @@ data:
   num_workers: 2
 
 # =============================================================================
+# Hyperbolic Hierarchical Contrastive (auxiliary loss on encoder features)
+# =============================================================================
+# Representation-side use of the same fine->coarse hierarchy that the
+# two-stage diffusion already uses at the output. Disabled by default; flip
+# `enabled: True` to add the aux loss. See docs/hyperbolic_hierarchical_contrastive.md
+hyp_contrastive:
+  enabled: True
+  weight: 0.001        # NOTE: diff loss is ~0.01, raw hyp loss ~5-8; tune from here
+  proj_dim: 128
+  curvature: 1.0
+  temperature: 0.5
+  w_sibling: 1.0       # repulsion for same-coarse siblings
+  w_cross: 2.0         # repulsion for cross-coarse cousins (> w_sibling)
+  # Detach features before the contrastive head so its gradients DON'T flow
+  # back into the BERT backbone. With True, the contrastive head trains only
+  # itself; BERT is shaped only by the diffusion losses. This eliminates the
+  # interaction that destabilizes fp16 diffusion training. Flip to False
+  # only with a tiny weight + warmup if you want the backbone to learn from
+  # the hierarchy signal directly.
+  stop_grad_to_backbone: True
+
+# =============================================================================
 # Output Configuration
 # =============================================================================
 output:
@@ -98,7 +120,12 @@ output:
 gpu:
   use_gpu: True
   gpus: 0
-  precision: 16
+  # Use fp32. The fp16/AMP path has been flaky with this model — early-training
+  # batches occasionally produce inf grads in some op (DiT attention or the
+  # AdaLN modulation under fp16), and once the optimizer state is contaminated
+  # the run stays stuck on skip-loops at one global_step forever. fp32 is ~30%
+  # slower but eliminates the entire AMP failure mode.
+  precision: 32
 
 # =============================================================================
 # Logging

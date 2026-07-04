@@ -23,7 +23,7 @@ use_mst: False
 
 # hHTM-style hyperbolic Hawkes encoder on top of BERT features
 # Ref: Rao et al., LREC-COLING 2024, https://github.com/YRaoGroup/hHTM
-use_hyp_encoder: True
+use_hyp_encoder: False
 hyp_layers: 2
 hyp_num_heads: 8
 hyp_curvature: 1.0
@@ -48,7 +48,7 @@ hyp_w_sibling: 1.0            # repulsion weight for same-coarse negatives
 hyp_w_cross: 2.0             # repulsion weight for cross-coarse negatives (> sibling)
 
 max_epochs: 20
-batch_size: 16
+batch_size: 2
 lr_bert: 1e-5
 lr_other: 1e-5
 weight_decay: 1e-5

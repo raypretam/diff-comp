@@ -2,7 +2,7 @@ base: ner
 dataset: mahanama_ner_fine
 backbone: google/muril-large-cased
 num_classes: 77
-max_length: 128
+max_length: 256
 dim_model: 1024
 dim_time: 256
 depth: 6

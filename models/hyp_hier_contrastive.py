@@ -171,6 +171,9 @@ class HyperbolicHierarchicalContrastive(nn.Module):
     # ------------------------------------------------------------------
     def forward(self, features: Tensor, seq_labels: Tensor) -> Tensor:
         device = features.device
+        # Hyperbolic ops are numerically delicate; do everything in fp32
+        # internally even if the caller is under autocast.
+        features = features.float()
         zero = torch.zeros((), device=device)
 
         feats, labels = self._select_tokens(
@@ -235,7 +238,15 @@ class HyperbolicHierarchicalContrastive(nn.Module):
         else:
             loss_sep = zero
 
-        return (self.lambda_supcon * loss_supcon
-                + self.lambda_parent * loss_parent
-                + self.lambda_norm * loss_norm
-                + self.lambda_sep * loss_sep)
+        total = (self.lambda_supcon * loss_supcon
+                 + self.lambda_parent * loss_parent
+                 + self.lambda_norm * loss_norm
+                 + self.lambda_sep * loss_sep)
+
+        # Defensive final guard: if numerical pathology still slips through
+        # (e.g. checkpoint with NaN parent_anchors, or some unanticipated
+        # corner case), zero this aux loss for the batch instead of letting
+        # NaN propagate into the backbone and poison every other parameter.
+        if not torch.isfinite(total):
+            return zero
+        return total

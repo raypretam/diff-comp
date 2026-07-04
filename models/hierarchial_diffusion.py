@@ -345,7 +345,18 @@ class HierarchicalDiffusionNeCTI(nn.Module):
         fine_to_coarse_map: Optional[Dict[int, int]] = None,
         # Training
         objective: str = 'pred_x0',
-        loss_type: str = 'l2'
+        loss_type: str = 'l2',
+        # Optional hyperbolic hierarchical contrastive auxiliary loss
+        # (representation-side hierarchy; orthogonal to the two-stage decoding)
+        use_hyp_contrastive: bool = False,
+        hyp_contrastive_weight: float = 0.001,
+        hyp_proj_dim: int = 128,
+        hyp_contrastive_curvature: float = 1.0,
+        hyp_temperature: float = 0.5,
+        hyp_w_sibling: float = 1.0,
+        hyp_w_cross: float = 2.0,
+        hyp_stop_grad_to_backbone: bool = True,
+        o_label_id: int = -1,
     ):
         super().__init__()
         
@@ -401,7 +412,34 @@ class HierarchicalDiffusionNeCTI(nn.Module):
             num_coarse_classes=num_coarse_classes,
             num_timesteps=time_steps
         )
-        
+
+        # Optional hyperbolic hierarchical contrastive aux loss
+        self.use_hyp_contrastive = use_hyp_contrastive
+        self.hyp_contrastive_weight = hyp_contrastive_weight
+        self.hyp_stop_grad_to_backbone = hyp_stop_grad_to_backbone
+        if use_hyp_contrastive:
+            if fine_to_coarse_map is None:
+                raise ValueError(
+                    "use_hyp_contrastive=True requires fine_to_coarse_map")
+            from models.hyp_hier_contrastive import HyperbolicHierarchicalContrastive
+            fine_to_coarse_list = [fine_to_coarse_map.get(i, 0)
+                                   for i in range(num_fine_classes)]
+            self.hyp_contrastive = HyperbolicHierarchicalContrastive(
+                in_dim=dim_model,
+                fine_to_coarse=fine_to_coarse_list,
+                num_coarse=num_coarse_classes,
+                o_label_id=o_label_id,
+                proj_dim=hyp_proj_dim,
+                curvature=hyp_contrastive_curvature,
+                temperature=hyp_temperature,
+                w_sibling=hyp_w_sibling,
+                w_cross=hyp_w_cross,
+            )
+            print(f"✓ Hyperbolic hierarchical contrastive enabled in "
+                  f"HierarchicalDiffusionNeCTI (weight={hyp_contrastive_weight})")
+        else:
+            self.hyp_contrastive = None
+
         self.to(device)
     
     def _compute_bits(self, num_classes: int) -> int:
@@ -721,26 +759,58 @@ class HierarchicalDiffusionNeCTI(nn.Module):
         # Extract features
         features = self.backbone(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
         
+        # Auxiliary hyperbolic hierarchical contrastive loss, computed on
+        # encoder features. Requires fine_labels (the loss needs the full
+        # leaf-label structure to define positives/siblings/cousins) — so it
+        # is only active when fine_labels is provided.
+        hyp_loss = None
+        if (self.hyp_contrastive is not None
+                and self.training
+                and fine_labels is not None):
+            # Force fp32 — atanh / acosh / divisions by tiny norms in the
+            # hyperbolic ops are not safe under autocast/fp16.
+            #
+            # Detach features by default: the contrastive head trains only
+            # its own projection + parent anchors, and the BERT backbone is
+            # shaped only by the diffusion losses. This prevents large
+            # contrastive gradients from destabilizing the backbone and
+            # therefore the (fp16) diffusion path. Set
+            # hyp_stop_grad_to_backbone=False to let contrastive gradients
+            # flow back to BERT (only safe with a small weight + warmup).
+            feats_for_hyp = features.detach() if self.hyp_stop_grad_to_backbone else features
+            with torch.amp.autocast('cuda', enabled=False):
+                hyp_loss = self.hyp_contrastive(feats_for_hyp.float(), fine_labels)
+
         if stage == 'stage1':
             assert coarse_labels is not None
-            return self.forward_stage1(features, coarse_labels, attention_mask)
-        
+            loss = self.forward_stage1(features, coarse_labels, attention_mask)
+            if hyp_loss is not None:
+                return {'loss': loss + self.hyp_contrastive_weight * hyp_loss,
+                        'stage1_loss': loss,
+                        'hyp_contrastive_loss': hyp_loss}
+            return loss
+
         elif stage == 'stage2':
             assert coarse_labels is not None and fine_labels is not None
-            return self.forward_stage2(features, coarse_labels, fine_labels, attention_mask)
-        
+            loss = self.forward_stage2(features, coarse_labels, fine_labels, attention_mask)
+            if hyp_loss is not None:
+                return {'loss': loss + self.hyp_contrastive_weight * hyp_loss,
+                        'stage2_loss': loss,
+                        'hyp_contrastive_loss': hyp_loss}
+            return loss
+
         elif stage == 'both':
             assert coarse_labels is not None and fine_labels is not None
-            
+
             loss1 = self.forward_stage1(features, coarse_labels, attention_mask)
             loss2 = self.forward_stage2(features, coarse_labels, fine_labels, attention_mask)
-            
-            return {
-                'loss': loss1 + loss2,
-                'stage1_loss': loss1,
-                'stage2_loss': loss2
-            }
-        
+            total = loss1 + loss2
+            out = {'loss': total, 'stage1_loss': loss1, 'stage2_loss': loss2}
+            if hyp_loss is not None:
+                out['loss'] = total + self.hyp_contrastive_weight * hyp_loss
+                out['hyp_contrastive_loss'] = hyp_loss
+            return out
+
         else:
             raise ValueError(f"Unknown stage: {stage}")
     
