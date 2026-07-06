@@ -1,13 +1,13 @@
 base: ner
 dataset: mahanama_ner_coarse
 backbone: google/muril-large-cased
-num_classes: 25
+num_classes: 21
 max_length: 128
 dim_model: 1024
 dim_time: 256
 depth: 6
 time_steps: 1000
-sampling_steps: 10
+sampling_steps: 50
 noise_schedule: linear
 objective: pred_x0
 loss_type: l2
@@ -33,8 +33,8 @@ optimizer_type: AdamW
 num_workers: 2
 use_gpu: True
 gpus: 0
-output_dir: output
+output_dir: saved_models/mahanama_ner_coarse
 logger: None
-test_path: False
+test_path: /home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_coarse/test.json
 model_path: model.pt
 save_limit: 3
