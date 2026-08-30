@@ -1,280 +1,235 @@
-# DiffusionSL for Nested Compound Identification (DepNeCTI)
+# Diffusion-based Nested Compound Type Identification for Sanskrit
 
-This directory contains the integration of DiffusionSL framework with DepNeCTI data for nested compound identification in Sanskrit texts using XLM-RoBERTa encoder.
+Code and configurations accompanying our work on **nested compound type identification
+(NeCTI)** in Sanskrit, built on a diffusion-based sequence labeling framework
+(DiffusionSL) with multilingual transformer encoders.
 
-## Overview
+The model pairs a pretrained encoder (XLM-RoBERTa / MuRIL) with a **Diffusion
+Transformer (DiT)** decoder that denoises tag sequences, and supports a
+**hierarchical two-stage** variant that first predicts coarse compound categories
+and then refines them into fine-grained relation labels.
 
-The implementation adapts the DiffusionSL sequence labeling framework for the task of nested compound identification. The model uses:
-- **Encoder**: XLM-RoBERTa (xlm-roberta-base) - a multilingual pretrained transformer
-- **Decoder**: Diffusion-based sequence labeling model (DiT - Diffusion Transformer)
-- **Dataset**: DepNeCTI with context (from `/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data/With Context`)
+---
 
-## Architecture
-
-### Model Components
-1. **XLM-R Encoder**: Extracts contextual representations for Sanskrit tokens
-2. **Diffusion Process**: Models compound label sequences through iterative denoising
-3. **DiT Decoder**: Transformer-based decoder for predicting compound labels at each diffusion step
-
-### Key Features
-- Handles nested compound structures (e.g., <<A-B>-C> type compounds)
-- Supports both Coarse and Finegrain granularity levels
-- Uses DDIM sampling for efficient inference
-- Implements self-conditioning for improved performance
-
-## File Structure
+## Repository layout
 
 ```
-DiffusionSL/
-├── data/ner/
-│   ├── necti_dataset.py          # Dataset loader for DepNeCTI data
-│   └── ner_dataset.py             # Original NER dataset (for reference)
-├── models/
-│   ├── ddim_bitdit.py             # Main diffusion model (BitDit)
-│   └── dit_discrete.py            # DiT architecture
-├── configs/
-│   ├── necti_coarse_xlmr.yaml     # Config for coarse-grained training
-│   └── necti_finegrain_xlmr.yaml  # Config for finegrain training
-├── trainer_necti.py               # Training script for NeCTI
-├── run_necti_coarse.sh           # Shell script for coarse training
-├── run_necti_finegrain.sh        # Shell script for finegrain training
-└── NECTI_README.md               # This file
+.
+├── configs/            YAML experiment configurations (one per setting)
+├── models/             Model definitions (DiT decoders, diffusion heads, encoders)
+├── data/               Dataset readers and label sets  (ner/, pos/, cws/)
+├── trainers/           Training entry points  (trainer_*.py, train_*.py)
+├── inference/          Inference and checkpoint evaluation entry points
+├── analysis/           Result analysis, per-class/length breakdowns, plotting
+├── baselines/          LLM and majority-class baselines
+├── tools/              Debugging, pipeline verification, prediction export
+├── tests/              Unit and integration tests
+├── scripts/            Shell launchers for the main experiments
+├── docs/               Extended documentation (see below)
+├── assets/figures/     Figures used in the paper
+└── run.py              Generic entry point for the NER / POS / CWS tasks
 ```
 
-## Data Format
+`docs/` is organised as:
 
-The DepNeCTI data is in CoNLL-U format:
+| Directory           | Contents                                                        |
+| ------------------- | --------------------------------------------------------------- |
+| `docs/tasks/`       | Per-task guides (NeCTI, NER, SACTI, hyperbolic variant)          |
+| `docs/guides/`      | Method and feature documentation (diffusion mechanics, MST decoding, cross-attention, data balancing, …) |
+| `docs/development/` | Development notes and design logs, kept for transparency         |
+
+### Important: run everything from the repository root
+
+Configuration files are resolved relative to the current working directory
+(`os.getcwd()/configs/...`, see [options.py:118](options.py#L118)), and the entry
+points live inside packages. Launch them as **modules** from the repo root:
+
+```bash
+python -m trainers.trainer_necti --config_file necti_coarse_xlmr.yaml
+python -m inference.inference_necti --config_file necti_coarse_xlmr.yaml
+python -m analysis.evaluate_coarse
+```
+
+The shell launchers in `scripts/` `cd` to the repository root themselves, so they
+can be invoked from anywhere.
+
+---
+
+## Installation
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Tested with Python 3.12 and PyTorch 2.6 (CUDA 12.4). Encoder weights
+(`FacebookAI/xlm-roberta-large`, `google/muril-large-cased`) download
+automatically from the HuggingFace Hub on first run.
+
+## Data
+
+Experiments use the **DepNeCTI** datasets (Sandhan et al., 2023), which are
+distributed separately and are *not* included in this repository. Obtain them
+from <https://github.com/yaswanth-iitkgp/DepNeCTI> and point the code at your
+copy with `--data_path`:
 
 ```
-1    sa         Comp2    _    2    BvS          # Coarse label: BvS (Bahuvrihi)
+<DATA_ROOT>/{With Context,Without Context}/
+├── Coarse/      Coarse_{train,dev,test,ood}_san
+└── Finegrain/   Finegrain_{train,dev,test,ood}_san
+```
+
+> **Note.** The YAML files in `configs/` and some launchers in `scripts/` still
+> contain absolute paths from the development machine
+> (`/home/pretam-pg/DepNeCTI/...`). Override `data_path` / `test_path` for your
+> environment, either by editing the config or by passing the flag on the
+> command line.
+
+Data is read in CoNLL-U style, one token per line:
+
+```
+1    sa         Comp2    _    2    BvS          # Bahuvrihi
 2    sarzapaM   Comp2    _    11   Comp_root
-3    tumburu    Comp3    _    5    Ds           # Coarse label: Ds (Dvandva)
+3    tumburu    Comp3    _    5    Ds           # Dvandva
 4    DAnya      Comp3    _    5    Ds
 5    vanyaM     Comp3    _    11   Comp_root
-6    caRqAM     CompNo   _    11   No_rel       # Not a compound
+6    caRqAM     CompNo   _    11   No_rel       # not part of a compound
 ```
 
-### Label Categories
+Two label granularities are supported: **Coarse** (Tatpurusha, Dvandva,
+Bahuvrihi, Avyayibhava, …) and **Finegrain** (57 labels: `T6`, `T7`, `Ds`,
+`BvS`, `U`, `K1`, …).
 
-**Coarse Granularity:**
-- CompNo: Not part of a compound
-- Comp2, Comp3, etc.: Compound members
-- Relation types: Tatpurusha, Dvandva, Bahuvrihi, Avyayibhava, etc.
+## Training
 
-**Finegrain Granularity:**
-- Uses abbreviated codes: T6, T7, Ds, BvS, U, K1, etc.
-- Provides more detailed compound type information
-
-## Installation & Requirements
-
-### Dependencies
 ```bash
-pip install torch transformers wandb pyyaml prettytable tqdm
+bash scripts/run_necti_coarse.sh        # coarse-grained NeCTI
+bash scripts/run_necti_finegrain.sh     # fine-grained NeCTI
+bash scripts/run_necti_bracket_coarse.sh
+bash scripts/run_necti_bit_scheme.sh
+bash scripts/run_sacti_coarse.sh
 ```
 
-### Pretrained Model
-The XLM-RoBERTa model will be automatically downloaded from HuggingFace:
-- Model: `xlm-roberta-base`
-- Size: ~278M parameters (encoder only)
+Equivalent direct invocation:
 
-## Usage
-
-### Training
-
-#### 1. Coarse-grained Compound Identification
 ```bash
-cd /home/pretam-pg/DiffusionSL
-bash run_necti_coarse.sh
-```
-
-Or run directly with Python:
-```bash
-python trainer_necti.py \
+python -m trainers.trainer_necti \
     --config_file necti_coarse_xlmr.yaml \
     --granularity Coarse \
-    --backbone xlm-roberta-base \
-    --data_path /home/pretam-pg/DepNeCTI/data/NeCTIS\ Model\ Data \
-    --logger wandb \
+    --backbone FacebookAI/xlm-roberta-large \
+    --data_path <DATA_ROOT> \
+    --use_context \
     --batch_size 16 \
-    --max_epochs 20
+    --max_epochs 20 \
+    --logger None
 ```
 
-#### 2. Finegrain Compound Identification
+Hierarchical (two-stage) model:
+
 ```bash
-bash run_necti_finegrain.sh
+python -m trainers.train_hierarchial --config configs/hierarchial_necti.yaml
 ```
 
-### Training Configuration
+### Key hyperparameters
 
-Key hyperparameters (can be modified in config files or command line):
+| Parameter        | Default             | Description                          |
+| ---------------- | ------------------- | ------------------------------------ |
+| `backbone`       | xlm-roberta-large   | Pretrained encoder                   |
+| `batch_size`     | 16                  | Training batch size                  |
+| `max_epochs`     | 20                  | Training epochs                      |
+| `lr_bert`        | 2e-5                | Encoder learning rate                |
+| `lr_other`       | 5e-4                | Diffusion decoder learning rate      |
+| `time_steps`     | 1000                | Forward diffusion steps              |
+| `sampling_steps` | 10                  | DDIM sampling steps at inference     |
+| `max_length`     | 256                 | Maximum sequence length              |
+| `depth`          | 6                   | DiT decoder depth                    |
+| `self_condition` | True                | Self-conditioning during denoising   |
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `backbone` | xlm-roberta-base | Encoder model |
-| `batch_size` | 16 | Training batch size |
-| `max_epochs` | 20 | Number of training epochs |
-| `lr_bert` | 2e-5 | Learning rate for XLM-R encoder |
-| `lr_other` | 5e-4 | Learning rate for diffusion decoder |
-| `time_steps` | 1000 | Number of diffusion steps |
-| `sampling_steps` | 10 | Inference sampling steps (DDIM) |
-| `max_length` | 256 | Maximum sequence length |
-| `depth` | 6 | DiT decoder depth |
+Pass `--logger wandb` to log to Weights & Biases (`wandb login` first), or
+`--logger None` to disable logging.
 
-### Monitoring Training
+## Inference and evaluation
 
-If using wandb logger:
 ```bash
-wandb login
-# Training metrics will be logged to wandb dashboard
+bash scripts/run_inference_necti.sh
+
+python -m inference.inference_necti --config_file necti_coarse_xlmr.yaml
+python -m inference.evaluate_checkpoint --config_file necti_coarse_xlmr.yaml
 ```
 
-To disable logging:
+Training reports Precision / Recall / F1 (Labeled Span Score) on the dev set
+after every epoch, and on the test and out-of-domain sets after training.
+
+Analysis and figures:
+
 ```bash
-python trainer_necti.py --config_file necti_coarse_xlmr.yaml --logger None
+python -m analysis.evaluate_coarse
+python -m analysis.analyze_per_class
+python -m analysis.plot_eval_by_length
+python -m analysis.refinement_analysis     # writes to assets/figures/
 ```
 
-### Evaluation
+Baselines:
 
-The training script automatically evaluates on:
-- **Dev set**: After each epoch (used for model selection)
-- **Test set**: After training completes (final evaluation)
-- **OOD set**: If available (out-of-domain generalization)
+```bash
+python -m baselines.majority_baseline
+python -m baselines.gemini                 # requires an API key in the environment
+```
 
-Metrics reported:
-- **Precision**: Ratio of correctly identified compounds
-- **Recall**: Ratio of actual compounds detected
-- **F1 Score**: Harmonic mean of precision and recall
+## Tests
 
-## Model Outputs
+```bash
+pytest tests/
+bash tests/test_integration.sh
+```
 
-Trained models are saved in:
+`tests/conftest.py` puts the repository root on `sys.path`, so the tests can be
+run from any working directory.
+
+> `tests/test_focal_loss.py` currently fails: it imports `focal_mse_loss` from
+> `models.ddim_bitdit`, which does not exist in this codebase.
+
+## Outputs
+
+Checkpoints and predictions are written to directories that are excluded from
+version control (`saved_models/`, `output/`, `inference_results/`, `logs/`,
+`wandb/`, `plots/`):
+
 ```
 saved_models/necti_{granularity}/
-├── best_model.pt                    # Best model based on dev F1
-└── best_model_epoch{N}_f1{score}.pt # Checkpoints with epoch info
+├── best_model.pt
+└── best_model_epoch{N}_f1{score}.pt
 ```
-
-## Customization
-
-### Using Different Encoder
-
-To use a different multilingual model:
-```bash
-python trainer_necti.py \
-    --config_file necti_coarse_xlmr.yaml \
-    --backbone ai4bharat/IndicBERT \  # Or any HuggingFace model
-    --dim_model 768  # Adjust based on model hidden size
-```
-
-### Adjusting Diffusion Parameters
-
-For faster inference (fewer sampling steps):
-```bash
-python trainer_necti.py \
-    --config_file necti_coarse_xlmr.yaml \
-    --sampling_steps 5  # Reduce from 10
-```
-
-For better quality (more diffusion steps):
-```bash
-python trainer_necti.py \
-    --config_file necti_coarse_xlmr.yaml \
-    --time_steps 2000  # Increase from 1000
-```
-
-## Dataset Path Configuration
-
-The dataset path points to:
-```
-/home/pretam-pg/DepNeCTI/data/NeCTIS Model Data/With Context/
-├── Coarse/
-│   ├── Coarse_train_san
-│   ├── Coarse_dev_san
-│   ├── Coarse_test_san
-│   └── Coarse_ood_san
-└── Finegrain/
-    ├── Finegrain_train_san
-    ├── Finegrain_dev_san
-    ├── Finegrain_test_san
-    └── Finegrain_ood_san
-```
-
-To use a different data location, modify `--data_path` argument.
-
-## Technical Details
-
-### Data Processing
-1. **Tokenization**: XLM-R subword tokenization with word-level alignment
-2. **Label Alignment**: First subword of each word gets the label, others are masked (-100)
-3. **Padding**: Dynamic padding to longest sequence in batch
-
-### Training Process
-1. **Forward Diffusion**: Add noise to ground-truth labels over T timesteps
-2. **Denoising**: Train model to predict clean labels from noisy versions
-3. **Sampling**: Use DDIM for fast generation during inference
-
-### Loss Function
-- MSE loss (L2) on predicted noise/labels in latent space
-- Masked loss (ignores padding tokens)
-- Gradient clipping for stability
-
-## Troubleshooting
-
-### CUDA Out of Memory
-Reduce batch size or sequence length:
-```bash
-python trainer_necti.py --config_file necti_coarse_xlmr.yaml --batch_size 8 --max_length 128
-```
-
-### Slow Training
-- Reduce `num_workers` if CPU is bottleneck
-- Use fewer `time_steps` for faster training
-- Enable mixed precision training (requires code modification)
-
-### Poor Performance
-- Increase `max_epochs` (20 → 30)
-- Adjust learning rates (`lr_bert`, `lr_other`)
-- Try different `snr_scale` values (1.0 - 3.0)
-- Enable `self_condition` for better quality
 
 ## Citation
 
-If you use this code, please cite:
+If you use this code, please cite DiffusionSL and DepNeCTI:
 
-**DiffusionSL:**
 ```bibtex
 @inproceedings{diffusionsl2023,
-    title={DiffusionSL: Sequence Labeling via Tag Diffusion Process},
-    booktitle={EMNLP 2023 Findings},
-    year={2023}
+    title     = {DiffusionSL: Sequence Labeling via Tag Diffusion Process},
+    booktitle = {Findings of the Association for Computational Linguistics: EMNLP 2023},
+    year      = {2023}
 }
 ```
-**DepNeCTI**
+
 ```bibtex
 @inproceedings{sandhan-etal-2023-depnecti,
-    title = "{D}ep{N}e{CTI}: Dependency-based Nested Compound Type Identification for {S}anskrit",
-    author = "Sandhan, Jivnesh  and
-      Narsupalli, Yaswanth  and
-      Muppirala, Sreevatsa  and
-      Krishnan, Sriram  and
-      Satuluri, Pavankumar  and
-      Kulkarni, Amba  and
-      Goyal, Pawan",
-    editor = "Bouamor, Houda  and
-      Pino, Juan  and
-      Bali, Kalika",
+    title     = "{D}ep{N}e{CTI}: Dependency-based Nested Compound Type Identification for {S}anskrit",
+    author    = "Sandhan, Jivnesh and Narsupalli, Yaswanth and Muppirala, Sreevatsa and
+                 Krishnan, Sriram and Satuluri, Pavankumar and Kulkarni, Amba and Goyal, Pawan",
     booktitle = "Findings of the Association for Computational Linguistics: EMNLP 2023",
-    month = dec,
-    year = "2023",
-    address = "Singapore",
+    month     = dec,
+    year      = "2023",
+    address   = "Singapore",
     publisher = "Association for Computational Linguistics",
-    url = "https://aclanthology.org/2023.findings-emnlp.914/",
-    doi = "10.18653/v1/2023.findings-emnlp.914",
-    pages = "13679--13692",
-    abstract = "Multi-component compounding is a prevalent phenomenon in Sanskrit, and understanding the implicit structure of a compound{'}s components is crucial for deciphering its meaning. Earlier approaches in Sanskrit have focused on binary compounds and neglected the multi-component compound setting. This work introduces the novel task of nested compound type identification (NeCTI), which aims to identify nested spans of a multi-component compound and decode the implicit semantic relations between them. To the best of our knowledge, this is the first attempt in the field of lexical semantics to propose this task. We present 2 newly annotated datasets including an out-of-domain dataset for this task. We also benchmark these datasets by exploring the efficacy of the standard problem formulations such as nested named entity recognition, constituency parsing and seq2seq, etc. We present a novel framework named DepNeCTI: Dependency-based Nested Compound Type Identifier that surpasses the performance of the best baseline with an average absolute improvement of 13.1 points F1-score in terms of Labeled Span Score (LSS) and a 5-fold enhancement in inference efficiency. In line with the previous findings in the binary Sanskrit compound identification task, context provides benefits for the NeCTI task. The codebase and datasets are publicly available at: https://github.com/yaswanth-iitkgp/DepNeCTI"
+    url       = "https://aclanthology.org/2023.findings-emnlp.914/",
+    doi       = "10.18653/v1/2023.findings-emnlp.914",
+    pages     = "13679--13692"
 }
 ```
 
 ## License
 
-This integration follows the licenses of both DiffusionSL and DepNeCTI projects.
+This work builds on the DiffusionSL and DepNeCTI projects and follows their
+respective licenses.

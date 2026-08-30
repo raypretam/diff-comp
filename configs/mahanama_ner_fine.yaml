@@ -35,6 +35,6 @@ use_gpu: True
 gpus: 0
 output_dir: output
 logger: None
-test_path: False
+test_path: /home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_fine/test.json
 model_path: model.pt
 save_limit: 3

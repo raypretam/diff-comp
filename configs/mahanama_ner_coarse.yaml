@@ -1,7 +1,7 @@
 base: ner
 dataset: mahanama_ner_coarse
 backbone: google/muril-large-cased
-num_classes: 21
+num_classes: 11
 max_length: 128
 dim_model: 1024
 dim_time: 256
@@ -35,6 +35,8 @@ use_gpu: True
 gpus: 0
 output_dir: saved_models/mahanama_ner_coarse
 logger: None
-test_path: /home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_coarse/test.json
+test_path: /home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_coarse_bio/test.json
 model_path: model.pt
 save_limit: 3
+debug: True
+decode_mode: 'bi'

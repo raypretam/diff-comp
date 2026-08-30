@@ -1,9 +1,9 @@
 # from trainer_cws_baseline import Trainer as Trainer_cws_baseline
-from trainer_cws import Trainer as Trainer_cws
-from trainer_ner import Trainer as Trainer_ner
-from trainer_ner_hyp import Trainer as Trainer_ner_hyp
+from trainers.trainer_cws import Trainer as Trainer_cws
+from trainers.trainer_ner import Trainer as Trainer_ner
+from trainers.trainer_ner_hyp import Trainer as Trainer_ner_hyp
 # from trainer_ner_baseline import Trainer as Trainer_ner_baseline
-from trainer_pos import Trainer as Trainer_pos
+from trainers.trainer_pos import Trainer as Trainer_pos
 # from trainer_pos_baseline import Trainer as Trainer_pos_baseline
 from options import get_parser
 import os

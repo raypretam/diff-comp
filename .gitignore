@@ -1,23 +1,95 @@
-wandb/
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
 __pycache__/
-*.pyc
-.env
-.DS_Store
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / linting caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
 .vscode/
 .idea/
-.ipynb_checkpoints/
-logs/
-data/ner/__pycache__/
-data/ner/__pycache__/necti_dataset.cpython-312.pyc
-inference_results/
-saved_models/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.key
+credentials.json
+
+# ---------------------------------------------------------------------------
+# Experiment outputs (large, regenerable — never commit)
+# ---------------------------------------------------------------------------
 output/
+saved_models/
+checkpoints/
+inference_results/
+logs/
+runs/
+wandb/
+plots/
+*.pt
+*.ckpt
+*.safetensors
+
+# Scratch artifacts: error logs, intermediate metrics, data dumps.
+# Kept on disk for the authors, excluded from the release.
+artifacts/
+
+# ---------------------------------------------------------------------------
+# Datasets and model caches that live outside version control
+# ---------------------------------------------------------------------------
+data/ner/mahanama_ner_coarse/
+data/ner/mahanama_ner_fine/
+data/ner/mahanama_ner_coarse_bio/
+data/ner/mahanama_ner_fine_bio/
 mahanama_ner/
-/home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_coarse/
-/home/pretam-pg/DiffusionSL/data/ner/mahanama_ner_fine/
-Diff*
-^README\.md$
-*.tex
-*.json
 *.parquet
-*.txt
+*.arrow
+
+# Third-party checkout, not part of this repository
+byt5-sanskrit-analyzers/
+
+# ---------------------------------------------------------------------------
+# Paper sources
+# ---------------------------------------------------------------------------
+# The camera-ready PDF (paper/*.pdf) is tracked; working drafts and
+# third-party reference papers are not.
+paper/drafts/
+paper/reference/
+*.aux
+*.bbl
+*.blg
+*.out
+*.synctex.gz

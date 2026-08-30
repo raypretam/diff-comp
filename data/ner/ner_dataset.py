@@ -198,9 +198,38 @@ class NERDatasetNEW(Dataset):
 
 
 class Collator1D:
-    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 128):
+    def __init__(self, tokenizer: PreTrainedTokenizer, max_length: int = 128,
+                 label_set: 'LabelSet1D' = None, debug: bool = False, debug_max_batches: int = 3):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.label_set = label_set
+        self.debug = debug
+        self.debug_max_batches = debug_max_batches
+        self._debug_calls = 0
+
+    def _print_debug(self, sentences, labels, input_ids, word_ids, seq_labels):
+        print(f"\n{'=' * 80}\n[Collator1D debug] batch call #{self._debug_calls + 1}\n{'=' * 80}")
+        n_show = min(2, len(sentences))
+        for b in range(n_show):
+            print(f"--- example {b} ---")
+            print(f"raw words       ({len(sentences[b])}): {sentences[b]}")
+            gold_label_names = [self.label_set.id2label(l) if self.label_set else l for l in labels[b]]
+            print(f"raw word labels ({len(labels[b])}): {gold_label_names}")
+
+            tokens = self.tokenizer.convert_ids_to_tokens(input_ids[b])
+            print(f"subword tokens  ({len(tokens)}): {tokens}")
+            print(f"word_ids        ({len(word_ids[b])}): {word_ids[b]}")
+
+            seql = seq_labels[b]
+            aligned_label_names = [
+                (self.label_set.id2label(l) if self.label_set else l) if l != -100 else '.'
+                for l in seql
+            ]
+            print("token -> label alignment:")
+            for tok, wid, lab in zip(tokens, word_ids[b], aligned_label_names):
+                print(f"    {tok!r:20s} word_id={str(wid):5s} label={lab}")
+        print(f"batch shapes: input_ids={len(input_ids)}x{len(input_ids[0])}, "
+              f"seq_labels={len(seq_labels)}x{len(seq_labels[0])}")
 
     def __call__(self, batch):
         sentences, labels = map(list, zip(*batch))
@@ -226,6 +255,10 @@ class Collator1D:
 
         assert len(seq_labels) == len(sentences)
         assert len(seq_labels[0]) == len(input_ids[0])
+
+        if self.debug and self._debug_calls < self.debug_max_batches:
+            self._print_debug(sentences, labels, input_ids, word_ids, seq_labels)
+            self._debug_calls += 1
 
         return torch.as_tensor(input_ids, dtype=torch.long), \
                torch.as_tensor(attention_mask, dtype=torch.long), \
