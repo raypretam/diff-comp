@@ -82,12 +82,11 @@ mahanama_ner/
 byt5-sanskrit-analyzers/
 
 # ---------------------------------------------------------------------------
-# Paper sources
+# Paper and figures — code only in this repository
 # ---------------------------------------------------------------------------
-# The camera-ready PDF (paper/*.pdf) is tracked; working drafts and
-# third-party reference papers are not.
-paper/drafts/
-paper/reference/
+paper/
+assets/
+*.pdf
 *.aux
 *.bbl
 *.blg

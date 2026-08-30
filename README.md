@@ -26,7 +26,6 @@ and then refines them into fine-grained relation labels.
 ├── tests/              Unit and integration tests
 ├── scripts/            Shell launchers for the main experiments
 ├── docs/               Extended documentation (see below)
-├── assets/figures/     Figures used in the paper
 └── run.py              Generic entry point for the NER / POS / CWS tasks
 ```
 
@@ -166,7 +165,7 @@ Analysis and figures:
 python -m analysis.evaluate_coarse
 python -m analysis.analyze_per_class
 python -m analysis.plot_eval_by_length
-python -m analysis.refinement_analysis     # writes to assets/figures/
+python -m analysis.refinement_analysis     # figures are written to assets/figures/
 ```
 
 Baselines:
@@ -191,9 +190,10 @@ run from any working directory.
 
 ## Outputs
 
-Checkpoints and predictions are written to directories that are excluded from
-version control (`saved_models/`, `output/`, `inference_results/`, `logs/`,
-`wandb/`, `plots/`):
+This repository tracks source code only. Checkpoints, predictions, figures and
+paper sources are written to directories that are excluded from version control
+(`saved_models/`, `output/`, `inference_results/`, `logs/`, `wandb/`, `plots/`,
+`assets/`, `paper/`):
 
 ```
 saved_models/necti_{granularity}/

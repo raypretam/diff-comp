@@ -173,6 +173,7 @@ def main():
 
     fig.tight_layout()
     out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "figures", "refinement_analysis.png")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     fig.savefig(out, dpi=150)
     print(f"\nSaved plot -> {out}")
 
